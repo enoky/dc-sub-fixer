@@ -182,3 +182,11 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# dc-sub-fixer
+# Hi-SAM is cloned in, not vendored; see README.
+
+third_party/
+timeline.json
+debug/
+*.mp4

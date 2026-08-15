@@ -1,0 +1,38 @@
+# dc-sub-fixer dependencies.
+#
+# Paddle and PyTorch bundle different cuDNN 9 builds. On Windows a DLL is
+# resolved by base name process-wide, so the two cannot be imported into the
+# same process - whichever loads first breaks the other with WinError 127.
+# The pipeline works around this by running text detection in a subprocess
+# (see dcsubfixer/detect_worker.py). Both still install into one environment.
+#
+# Install into a fresh venv, in this order:
+#
+#   python -m venv .venv
+#   .venv\Scripts\python -m pip install -U pip
+#   .venv\Scripts\pip install torch==2.13.0+cu132 torchvision==0.28.0+cu132 \
+#       --index-url https://download.pytorch.org/whl/cu132
+#   .venv\Scripts\pip install paddlepaddle-gpu==3.3.1 \
+#       -i https://www.paddlepaddle.org.cn/packages/stable/cu130/
+#   .venv\Scripts\pip install -r requirements.txt
+#
+# The torch and paddle index URLs above are for CUDA 13 on an RTX 50-series
+# (SM 12.0) card. Pick the channels matching your GPU and driver from
+# https://pytorch.org and https://www.paddlepaddle.org.cn/packages/stable/ .
+
+paddleocr==3.7.0
+
+# Pinned because paddleocr depends on opencv-contrib-python. Installing plain
+# opencv-python alongside it puts two different cv2 builds in one site-packages
+# and they overwrite each other's files; contrib is a superset, so use it alone.
+opencv-contrib-python==4.10.0.84
+
+av>=14
+numpy>=1.26
+timm
+shapely
+pyclipper
+scipy
+scikit-image
+tqdm
+pytest
