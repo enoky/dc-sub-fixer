@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from dcsubfixer import composite as comp
-from dcsubfixer import geometry, regions
+from dcsubfixer import geometry, regions, session
 
 
 # ---------------------------------------------------------------- geometry
@@ -265,6 +265,44 @@ def test_composite_preserves_16_bit_precision_outside_the_mask():
     untouched = np.ones((40, 120), bool)
     untouched[10:14, 30:60] = False
     assert np.array_equal(out[untouched], depth[untouched])
+
+
+def test_mask_store_round_trips_a_probability_map(tmp_path):
+    store = session.MaskStore(str(tmp_path))
+    prob = np.linspace(0, 1, 64 * 32, dtype=np.float32).reshape(32, 64)
+    box = (16, 32, 80, 64)
+    assert store.get(7, box) is None
+    store.put(7, box, prob)
+    back = store.get(7, box)
+    assert back is not None and back.shape == prob.shape
+    # 8-bit quantisation, far finer than the alpha window that consumes it.
+    assert np.abs(back - prob).max() < 1.0 / 255 + 1e-6
+
+
+def test_mask_store_keys_on_frame_and_box(tmp_path):
+    store = session.MaskStore(str(tmp_path))
+    prob = np.ones((8, 8), np.float32)
+    store.put(1, (0, 0, 8, 8), prob)
+    assert store.get(2, (0, 0, 8, 8)) is None, "a different frame must not collide"
+    assert store.get(1, (0, 0, 8, 9)) is None, "a different box must not collide"
+
+
+def test_cache_dir_is_stable_and_pair_specific():
+    a = session.default_cache_dir("clip.mp4", "clip_depth.mp4")
+    assert a == session.default_cache_dir("clip.mp4", "clip_depth.mp4")
+    assert a != session.default_cache_dir("other.mp4", "clip_depth.mp4")
+
+
+def test_display_normalisation_uses_the_shared_window():
+    plane = np.array([[100, 200, 300]], np.uint16)
+    out = session.to_display(plane, (100.0, 300.0))
+    assert list(out[0]) == [0, 127, 255]
+
+
+def test_display_normalisation_survives_a_flat_frame():
+    plane = np.full((4, 4), 500, np.uint16)
+    out = session.to_display(plane, (500.0, 500.0))
+    assert out.dtype == np.uint8 and out.max() == 0
 
 
 def test_each_region_resolves_its_own_depth():

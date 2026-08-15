@@ -7,6 +7,10 @@ pass simply runs here, in a process that never imports torch, and hands back a
 JSON timeline of text regions.
 
 Invoked as:  python -m dcsubfixer.detect_worker <request.json> <result.json>
+
+With --progress it also writes `PROGRESS <done> <total>` lines to stdout, which
+the GUI parses to drive a progress bar. The flag is opt-in so the CLI's stdout
+stays clean.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ from . import ocr, regions, video
 from .regions import Box
 
 
-def detect(request: dict) -> dict:
+def detect(request: dict, progress: bool = False) -> dict:
     rgb_path = request["rgb_path"]
     det_cfg = ocr.DetectorConfig(**request["detector"])
     reg_cfg = regions.RegionConfig(**request["region"])
@@ -65,7 +69,11 @@ def detect(request: dict) -> dict:
                 if len(batch) >= det_cfg.batch_size:
                     flush()
             bar.update(1)
+            if progress and total and idx % 8 == 0:
+                print(f"PROGRESS {idx + 1} {total}", flush=True)
         flush()
+    if progress:
+        print(f"PROGRESS {n_seen} {total or n_seen}", flush=True)
 
     while len(per_frame) < n_seen:
         per_frame.append(list(last))
@@ -85,13 +93,15 @@ def detect(request: dict) -> dict:
 
 
 def main(argv: List[str]) -> int:
-    if len(argv) != 3:
+    args = [a for a in argv[1:] if a != "--progress"]
+    progress = "--progress" in argv
+    if len(args) != 2:
         print(__doc__, file=sys.stderr)
         return 2
-    with open(argv[1], "r", encoding="utf-8") as fh:
+    with open(args[0], "r", encoding="utf-8") as fh:
         request = json.load(fh)
-    result = detect(request)
-    with open(argv[2], "w", encoding="utf-8") as fh:
+    result = detect(request, progress=progress)
+    with open(args[1], "w", encoding="utf-8") as fh:
         json.dump(result, fh)
     return 0
 

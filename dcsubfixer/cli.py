@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from typing import Optional, Tuple
 
 from . import composite as comp
@@ -58,6 +59,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("rgb", help="RGB source clip")
     p.add_argument("depth", help="DepthCrafter depth map video for the same clip")
     p.add_argument("output", nargs="?", help="output depth video (required unless --probe)")
+    p.add_argument("--gui", action="store_true",
+                   help="open the tuning window instead of rendering; the two video "
+                        "arguments are optional when it is given")
 
     g = p.add_argument_group("models")
     g.add_argument("--models-dir", default="models", help="directory holding the .pth checkpoints")
@@ -212,6 +216,13 @@ def config_from_args(args: argparse.Namespace) -> pipeline.PipelineConfig:
 
 
 def main(argv: Optional[list] = None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if "--gui" in raw:
+        from .gui import main as gui_main
+
+        rest = [a for a in raw if a != "--gui"]
+        return gui_main([sys.argv[0]] + rest)
+
     parser = build_parser()
     args = parser.parse_args(argv)
 

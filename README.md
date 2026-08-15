@@ -15,6 +15,9 @@ RGB frame ──> PP-OCRv6 detect ──> text regions ──> Hi-SAM stroke mas
 depth frame <── composite <── align to depth resolution <──┘
 ```
 
+There is a CLI for batch work and a [tuning window](#the-tuning-window) for
+choosing settings by eye.
+
 ## Install
 
 Needs a CUDA GPU. Developed against an RTX 5080 (SM 12.0) on CUDA 13, Python
@@ -68,6 +71,42 @@ python -m dcsubfixer clip_rgb.mp4 clip_depth.mp4 out.mp4 --timeline ./timeline.j
 ```
 
 `python -m dcsubfixer --help` lists every option.
+
+## The tuning window
+
+The compositing settings are the ones no default gets right for every clip, and
+the only way to choose them is to look at a real frame. That is what the GUI is
+for:
+
+```bash
+python -m dcsubfixer --gui
+```
+
+It takes the two paths optionally, so `python -m dcsubfixer --gui rgb.mp4 depth.mp4`
+opens straight into a clip.
+
+Four panes over one shared zoom — RGB with the detected regions, depth before,
+the glyph mask, depth after — a timeline strip marking every run of text, and
+compositing controls that update the visible frame as you drag them.
+
+| key | |
+| --- | --- |
+| `←` `→` | step a frame |
+| `N` | jump to the next run of text |
+| `1`–`4` | blow one pane up to fill the window |
+| `Space` | flip between before and after, at the same zoom |
+| `0` / `F` | show all four / fit |
+
+The reason it feels immediate is that segmentation is cached to disk per frame
+and region. Moving a slider re-composites from the stored mask — array
+arithmetic, about 20ms — and no GPU work happens until you visit a frame nobody
+has segmented yet, which costs about 0.2s. The cache lives under
+`~/.dcsubfixer/cache/` keyed to the clip pair, so it survives restarts.
+
+Detection runs as a subprocess because it has to (Paddle and torch cannot share
+a process). The final render runs as one by choice: **it shells out to the same
+CLI you could type yourself**, so what you tuned is exactly what you get. The
+window shows that command, ready to copy for batch use.
 
 ## How it handles the hard parts
 
