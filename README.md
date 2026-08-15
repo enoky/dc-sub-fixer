@@ -85,6 +85,11 @@ python -m dcsubfixer --gui
 It takes the two paths optionally, so `python -m dcsubfixer --gui rgb.mp4 depth.mp4`
 opens straight into a clip.
 
+On Windows, **`dc-sub-fixer.bat`** does the same without activating anything
+first — double-click it, make a desktop shortcut to it, or drop an RGB clip and
+its depth map onto it to open that pair. It keeps a console window open behind
+the GUI on purpose: if something goes wrong, that is where the error appears.
+
 Four panes over one shared zoom — RGB with the detected regions, depth before,
 the glyph mask, depth after — a timeline strip marking every run of text, and
 compositing controls that update the visible frame as you drag them.
