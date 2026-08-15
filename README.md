@@ -117,9 +117,12 @@ something wrong, because the two failure modes are not symmetric: a missed
 caption leaves the depth exactly as DepthCrafter made it, while a false
 positive paints over a region that was fine. Two independent filters do the
 work — a detection confidence floor (`--det-box-thresh`), and a persistence
-requirement (`--min-track`, defaulting to a third of a second's worth of
-frames, since text has to stay up long enough to read). On the demo clip the
-pair removes every false positive without losing a single true frame.
+requirement (`--min-track`, defaulting to half a second's worth of frames,
+since text has to stay up long enough to read). On the demo clip either one
+alone removes every false positive without losing a true frame, so the pair
+has margin: an aircraft wall panel that the detector read as text for seven
+straight frames is cut by persistence at the default, and by confidence at
+`--det-box-thresh 0.7`.
 
 **Choosing the grey level.** `--text-value auto` (the default) reads the level
 back out of the depth map, so the repaired text keeps the depth DepthCrafter

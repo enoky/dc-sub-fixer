@@ -163,10 +163,10 @@ def test_text_moving_faster_than_the_tracker_is_dropped():
     assert all(boxes for boxes in kept)
 
 
-def test_min_track_defaults_to_a_third_of_a_second():
+def test_min_track_defaults_to_half_a_second():
     cfg = regions.RegionConfig()
-    assert regions.resolve_min_track(cfg, 23.976) == 7
-    assert regions.resolve_min_track(cfg, 60.0) == 18
+    assert regions.resolve_min_track(cfg, 23.976) == 12
+    assert regions.resolve_min_track(cfg, 60.0) == 30
     # Never below 2, however slow the clip.
     assert regions.resolve_min_track(cfg, 1.0) == 2
 

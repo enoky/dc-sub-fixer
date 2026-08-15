@@ -19,7 +19,13 @@ Box = Tuple[int, int, int, int]  # x0, y0, x1, y1 (exclusive on x1/y1)
 
 # Shortest time a real caption or credit stays on screen, near enough. Anything
 # briefer than this cannot be read and is treated as a false detection.
-MIN_TRACK_SECONDS = 0.3
+#
+# Half a second sits between the two things it has to separate. Real captions
+# are up for a second or more, so this keeps a factor of two in hand; scene
+# texture that a detector momentarily reads as text persists for far less. It
+# is the main defence against a false positive, which unlike a missed caption
+# actively damages a region of the depth map that was fine.
+MIN_TRACK_SECONDS = 0.5
 
 
 def resolve_min_track(cfg: "RegionConfig", fps: float) -> int:
