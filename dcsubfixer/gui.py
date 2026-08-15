@@ -20,13 +20,16 @@ Run with:  python -m dcsubfixer.gui
 
 from __future__ import annotations
 
+import faulthandler
 import json
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import traceback
 from dataclasses import asdict
 from typing import List, Optional, Tuple
 
@@ -262,22 +265,37 @@ class TimelineStrip(QWidget):
 # background workers
 # --------------------------------------------------------------------------
 class RenderWorker(QObject):
-    """Renders one frame off the UI thread; segmentation can take ~0.2s."""
+    """Renders one frame off the UI thread; segmentation can take ~0.2s.
+
+    The kick is a signal rather than a direct call or a QTimer, because both of
+    those run in whichever thread asked. A signal emitted from the UI thread to
+    an object living in the render thread is delivered as a queued call, which
+    is what actually gets the work off the UI thread.
+
+    Only the most recent request is kept. Dragging a slider produces a stream of
+    them, and rendering every intermediate value would put the view further and
+    further behind the controls.
+    """
 
     done = Signal(object, float)
     failed = Signal(str)
+    _kick = Signal()
 
     def __init__(self) -> None:
         super().__init__()
         self.session: Optional[session.TuningSession] = None
         self._pending: Optional[Tuple[int, comp.CompositeConfig, bool]] = None
+        self._lock = threading.Lock()
+        self._kick.connect(self._run)
 
     def request(self, frame: int, cfg: comp.CompositeConfig, segment: bool) -> None:
-        self._pending = (frame, cfg, segment)
-        QTimer.singleShot(0, self._run)
+        with self._lock:
+            self._pending = (frame, cfg, segment)
+        self._kick.emit()
 
     def _run(self) -> None:
-        job, self._pending = self._pending, None
+        with self._lock:
+            job, self._pending = self._pending, None
         if job is None or self.session is None:
             return
         frame, cfg, segment = job
@@ -286,7 +304,7 @@ class RenderWorker(QObject):
             panels = self.session.render(frame, cfg, segment=segment)
             self.done.emit(panels, (time.time() - t) * 1000.0)
         except Exception as exc:  # surfaced in the status bar, never silent
-            self.failed.emit(f"{type(exc).__name__}: {exc}")
+            self.failed.emit(f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}")
 
 
 class ProcessWorker(QObject):
@@ -885,6 +903,16 @@ def _guess_depth(rgb_path: str) -> Optional[str]:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    # A GUI that dies silently is impossible to diagnose, and a Qt slot that
+    # raises would otherwise take the process down without a word.
+    faulthandler.enable()
+
+    def hook(exc_type, exc, tb) -> None:
+        traceback.print_exception(exc_type, exc, tb)
+        sys.stderr.flush()
+
+    sys.excepthook = hook
+
     app = QApplication(argv if argv is not None else sys.argv)
     app.setStyle("Fusion")
     win = MainWindow()
