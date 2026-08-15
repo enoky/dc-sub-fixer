@@ -363,6 +363,7 @@ class MainWindow(QMainWindow):
         self.frame = 0
         self._proc_thread: Optional[QThread] = None
         self._proc_worker: Optional[ProcessWorker] = None
+        self._proc_done_cb = None
 
         self._build_ui()
         self._build_worker()
@@ -549,8 +550,14 @@ class MainWindow(QMainWindow):
         self._render_worker = RenderWorker()
         self._render_worker.moveToThread(self._render_thread)
         self._render_worker.done.connect(self._on_rendered)
-        self._render_worker.failed.connect(lambda m: self.status.showMessage(f"render failed — {m}"))
+        # A bound method, for the same reason as in _start_process: a lambda
+        # here would run in the render thread and touch the status bar there.
+        self._render_worker.failed.connect(self._on_render_failed)
         self._render_thread.start()
+
+    def _on_render_failed(self, message: str) -> None:
+        self.status.showMessage(f"render failed — {message.splitlines()[0]}")
+        print(message, file=sys.stderr)
 
     # -- settings -------------------------------------------------------
     def composite_config(self) -> comp.CompositeConfig:
@@ -813,6 +820,16 @@ class MainWindow(QMainWindow):
 
     # -- subprocess plumbing --------------------------------------------
     def _start_process(self, cmd: List[str], label: str, on_done) -> None:
+        """Run a subprocess, reporting into the window as it goes.
+
+        Every signal below lands on a bound method of this window rather than
+        on a lambda or a closure. That is not style: Qt picks a direct or a
+        queued connection from the receiver's thread, and it can only work that
+        out for a slot belonging to a QObject. A plain callable gets a direct
+        connection and therefore runs in the worker thread, which means the
+        widgets it touches are being mutated off the GUI thread - an access
+        violation that takes the whole process down.
+        """
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)
         self.btn_detect.setEnabled(False)
@@ -825,20 +842,10 @@ class MainWindow(QMainWindow):
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.progress.connect(self._on_progress)
-        worker.line.connect(lambda t: self.status.showMessage(t[:160]))
+        worker.line.connect(self._on_process_line)
+        worker.finished.connect(self._on_process_finished)
 
-        def finish(code: int) -> None:
-            thread.quit()
-            thread.wait()
-            self.progress.setVisible(False)
-            self.btn_detect.setEnabled(self.session is not None)
-            self.btn_render.setEnabled(bool(self.session and self.session.text_runs()))
-            self.btn_cancel.setEnabled(False)
-            self._proc_thread = None
-            self._proc_worker = None
-            on_done(code)
-
-        worker.finished.connect(finish)
+        self._proc_done_cb = on_done
         self._proc_thread = thread
         self._proc_worker = worker
         thread.start()
@@ -846,6 +853,23 @@ class MainWindow(QMainWindow):
     def _on_progress(self, done: int, total: int) -> None:
         self.progress.setRange(0, total)
         self.progress.setValue(done)
+
+    def _on_process_line(self, text: str) -> None:
+        self.status.showMessage(text[:160])
+
+    def _on_process_finished(self, code: int) -> None:
+        thread, self._proc_thread = self._proc_thread, None
+        self._proc_worker = None
+        if thread is not None:
+            thread.quit()
+            thread.wait(5000)
+        self.progress.setVisible(False)
+        self.btn_detect.setEnabled(self.session is not None)
+        self.btn_render.setEnabled(bool(self.session and self.session.text_runs()))
+        self.btn_cancel.setEnabled(False)
+        cb, self._proc_done_cb = self._proc_done_cb, None
+        if cb is not None:
+            cb(code)
 
     def _cancel_process(self) -> None:
         if self._proc_worker is not None:
