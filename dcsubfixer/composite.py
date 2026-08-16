@@ -22,7 +22,10 @@ class CompositeConfig:
     mask_low: float = 0.35     # probability mapped to alpha 0
     mask_high: float = 0.65    # probability mapped to alpha 1
     binary: bool = False       # hard-threshold the mask instead of feathering
-    dilate: int = 0            # >0 thickens glyphs, <0 thins them (pixels)
+    # Thicken (>0) or thin (<0) the glyphs, in depth-space pixels. Fractional:
+    # a whole pixel here is two in the source, which is a lot on thin text.
+    dilate: float = 0.0
+    feather: float = 0.0       # gaussian sigma applied to the alpha edges
     heal: bool = False         # inpaint DepthCrafter's jagged halo before compositing
     heal_radius: int = 6
     opacity: float = 1.0
@@ -42,13 +45,50 @@ def probability_to_alpha(prob: np.ndarray, cfg: CompositeConfig) -> np.ndarray:
         alpha = np.clip((prob - lo) / (hi - lo), 0.0, 1.0).astype(np.float32)
 
     if cfg.dilate:
-        k = abs(cfg.dilate) * 2 + 1
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
-        alpha = cv2.dilate(alpha, kernel) if cfg.dilate > 0 else cv2.erode(alpha, kernel)
+        alpha = _grow(alpha, float(cfg.dilate))
+    if cfg.feather > 0:
+        alpha = _feather(alpha, float(cfg.feather))
 
     if cfg.opacity != 1.0:
         alpha = alpha * float(np.clip(cfg.opacity, 0.0, 1.0))
-    return alpha
+    return np.clip(alpha, 0.0, 1.0)
+
+
+def _grow(alpha: np.ndarray, amount: float) -> np.ndarray:
+    """Thicken or thin by a fractional number of pixels.
+
+    Morphology only comes in whole pixels, and one pixel of it here is two in
+    the source, which on thin text is the difference between a hairline and a
+    slab. Blending between the two neighbouring whole-pixel results gives the
+    in-between amounts, which is what fine adjustment on thin glyphs needs.
+    """
+    steps = int(np.ceil(abs(amount)))
+    if steps <= 0:
+        return alpha
+    frac = abs(amount) - (steps - 1)
+
+    def morph(radius: int) -> np.ndarray:
+        if radius <= 0:
+            return alpha
+        k = radius * 2 + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        return cv2.dilate(alpha, kernel) if amount > 0 else cv2.erode(alpha, kernel)
+
+    lower, upper = morph(steps - 1), morph(steps)
+    return lower * (1.0 - frac) + upper * frac
+
+
+def _feather(alpha: np.ndarray, sigma: float) -> np.ndarray:
+    """Soften the alpha edges.
+
+    Distinct from widening the mask_low/mask_high window, which reshapes how
+    stroke *probability* becomes coverage and does nothing at all once the mask
+    is binary. This is a spatial blur, so it softens the edge whatever produced
+    it.
+    """
+    radius = max(1, int(round(sigma * 3)))
+    k = radius * 2 + 1
+    return cv2.GaussianBlur(alpha, (k, k), sigma)
 
 
 def resolve_text_value(

@@ -494,7 +494,8 @@ class MainWindow(QMainWindow):
         self.sld_value = _slider(0, 255, 255, self._settings_changed)
         self.sld_low = _slider(0, 100, 45, self._settings_changed)
         self.sld_high = _slider(0, 100, 60, self._settings_changed)
-        self.sld_dilate = _slider(-4, 4, 0, self._settings_changed)
+        self.sld_dilate = _slider(-150, 150, 0, self._settings_changed)
+        self.sld_feather = _slider(0, 40, 0, self._settings_changed)
         self.sld_opacity = _slider(0, 100, 100, self._settings_changed)
         self.chk_binary = QCheckBox("hard edges")
         self.chk_binary.stateChanged.connect(self._settings_changed)
@@ -508,6 +509,7 @@ class MainWindow(QMainWindow):
         cl.addRow("mask low", self.sld_low)
         cl.addRow("mask high", self.sld_high)
         cl.addRow("dilate", self.sld_dilate)
+        cl.addRow("feather", self.sld_feather)
         cl.addRow("opacity", self.sld_opacity)
         cl.addRow("", self.chk_binary)
         cl.addRow("heal", self.chk_heal)
@@ -568,7 +570,8 @@ class MainWindow(QMainWindow):
             mask_low=low,
             mask_high=high,
             binary=self.chk_binary.isChecked(),
-            dilate=self.sld_dilate.value(),
+            dilate=self.sld_dilate.value() / 100.0,
+            feather=self.sld_feather.value() / 20.0,
             heal=self.chk_heal.isChecked(),
             heal_radius=self.sld_heal_r.value(),
             opacity=self.sld_opacity.value() / 100.0,
@@ -580,7 +583,8 @@ class MainWindow(QMainWindow):
         cfg = self.composite_config()
         self.lbl_settings.setText(
             f"window {cfg.mask_low:.2f}–{cfg.mask_high:.2f}"
-            + (f", dilate {cfg.dilate:+d}" if cfg.dilate else "")
+            + (f", dilate {cfg.dilate:+.2f}px" if cfg.dilate else "")
+            + (f", feather {cfg.feather:.2f}" if cfg.feather else "")
             + (f", opacity {cfg.opacity:.0%}" if cfg.opacity != 1 else "")
         )
         self._update_command()
@@ -803,7 +807,9 @@ class MainWindow(QMainWindow):
         if cfg.binary:
             cmd += ["--binary"]
         if cfg.dilate:
-            cmd += ["--dilate", str(cfg.dilate)]
+            cmd += ["--dilate", f"{cfg.dilate:.2f}"]
+        if cfg.feather:
+            cmd += ["--feather", f"{cfg.feather:.2f}"]
         if cfg.opacity != 1.0:
             cmd += ["--opacity", f"{cfg.opacity:.2f}"]
         if cfg.text_value != "auto":

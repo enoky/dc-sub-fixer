@@ -310,7 +310,8 @@ python -m dcsubfixer rgb.mp4 depth.mp4 out.mp4 --heal --mask-low 0.45 --mask-hig
 | glyph edges or descenders clipped | raise `--gate-dilate`, or `--no-gate` |
 | glyphs still look soft | `--heal`, and narrow the window to `--mask-low 0.45 --mask-high 0.6` |
 | smeared halo remains around the text | `--heal`, raise `--heal-radius` |
-| glyphs too thin or too fat | `--dilate 1` / `--dilate -1` |
+| glyphs too thin or too fat | `--dilate 0.2` / `--dilate -0.2`. It is in *depth* pixels, so a whole one is two in the source — on the demo credit `--dilate 1` merges the letters into blobs. Useful travel is roughly 0 to 0.6 |
+| glyph edges too crisp against the depth | `--feather 0.8`; a spatial blur, so unlike the mask window it works on `--binary` too |
 | edges aliased or crawling | widen `--mask-low` / `--mask-high` |
 | text flickers on and off | raise `--max-gap`, lower `--min-track` |
 | short or fast-moving text dropped | `--min-track 1` |

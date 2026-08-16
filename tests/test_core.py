@@ -219,6 +219,76 @@ def test_alpha_window_maps_probabilities_to_a_soft_edge():
     assert alpha[0, 4] == 1.0
 
 
+def _glyph_alpha(width=3):
+    """A thin vertical stroke, the case fine dilation exists for."""
+    prob = np.zeros((40, 40), np.float32)
+    prob[10:30, 20:20 + width] = 1.0
+    return prob
+
+
+def test_dilate_is_monotonic_in_fractional_steps():
+    """Each tenth of a pixel must actually do something, and in one direction."""
+    prob = _glyph_alpha()
+    coverage = [
+        comp.probability_to_alpha(prob, comp.CompositeConfig(dilate=d)).sum()
+        for d in (0.0, 0.2, 0.5, 0.8, 1.0)
+    ]
+    assert all(b > a for a, b in zip(coverage, coverage[1:])), coverage
+
+
+def test_a_fractional_dilate_lands_between_the_whole_ones():
+    prob = _glyph_alpha()
+    none = comp.probability_to_alpha(prob, comp.CompositeConfig(dilate=0.0)).sum()
+    half = comp.probability_to_alpha(prob, comp.CompositeConfig(dilate=0.5)).sum()
+    one = comp.probability_to_alpha(prob, comp.CompositeConfig(dilate=1.0)).sum()
+    assert none < half < one
+    # A whole pixel of morphology is a big jump on thin text; the point of the
+    # fractional path is that it is not forced on you.
+    assert one / max(none, 1) > 1.5
+
+
+def test_negative_dilate_thins():
+    prob = _glyph_alpha(width=6)
+    thinner = comp.probability_to_alpha(prob, comp.CompositeConfig(dilate=-0.6)).sum()
+    plain = comp.probability_to_alpha(prob, comp.CompositeConfig(dilate=0.0)).sum()
+    assert thinner < plain
+
+
+def test_dilate_zero_changes_nothing():
+    prob = _glyph_alpha()
+    a = comp.probability_to_alpha(prob, comp.CompositeConfig(dilate=0.0))
+    b = comp.probability_to_alpha(prob, comp.CompositeConfig())
+    assert np.array_equal(a, b)
+
+
+def test_feather_softens_the_edge_without_moving_it():
+    prob = _glyph_alpha(width=8)
+    hard = comp.probability_to_alpha(prob, comp.CompositeConfig(binary=True))
+    soft = comp.probability_to_alpha(
+        prob, comp.CompositeConfig(binary=True, feather=1.2))
+    # More intermediate values means a genuinely graded edge.
+    assert ((soft > 0.02) & (soft < 0.98)).sum() > ((hard > 0.02) & (hard < 0.98)).sum()
+    # And it should not shift the glyph's centre of mass.
+    ys, xs = np.mgrid[: prob.shape[0], : prob.shape[1]]
+    assert (soft * xs).sum() / soft.sum() == pytest.approx(
+        (hard * xs).sum() / hard.sum(), abs=0.25)
+
+
+def test_feather_works_on_a_binary_mask():
+    """The mask window cannot soften a hard mask; a spatial blur can."""
+    prob = _glyph_alpha(width=8)
+    cfg = comp.CompositeConfig(binary=True, feather=1.0)
+    alpha = comp.probability_to_alpha(prob, cfg)
+    assert 0.0 < alpha.min() or ((alpha > 0.0) & (alpha < 1.0)).any()
+
+
+def test_alpha_stays_in_range_with_everything_on():
+    prob = _glyph_alpha(width=5)
+    cfg = comp.CompositeConfig(dilate=1.4, feather=1.5, opacity=0.8)
+    alpha = comp.probability_to_alpha(prob, cfg)
+    assert alpha.min() >= 0.0 and alpha.max() <= 1.0
+
+
 def test_binary_mode_is_hard_edged():
     cfg = comp.CompositeConfig(binary=True, mask_high=0.65)
     prob = np.array([[0.5, 0.9]], np.float32)

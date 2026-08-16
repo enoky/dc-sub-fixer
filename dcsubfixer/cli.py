@@ -157,8 +157,14 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--mask-high", type=float, default=0.65,
                    help="stroke probability mapped to fully opaque")
     g.add_argument("--binary", action="store_true", help="hard-edged mask instead of feathered")
-    g.add_argument("--dilate", type=int, default=0,
-                   help="thicken glyphs by N pixels, or thin them with a negative value")
+    g.add_argument("--dilate", type=float, default=0.0,
+                   help="thicken glyphs by N depth-space pixels, or thin them with a "
+                        "negative value. Fractional: a whole pixel here is two in the "
+                        "source, which is a lot on thin text")
+    g.add_argument("--feather", type=float, default=0.0,
+                   help="gaussian sigma softening the glyph edges, in depth-space "
+                        "pixels. Unlike the mask window this is a spatial blur, so it "
+                        "works on a --binary mask too")
     g.add_argument("--opacity", type=float, default=1.0, help="blend strength of the glyphs")
     g.add_argument("--heal", action="store_true",
                    help="inpaint DepthCrafter's jagged halo around the text before "
@@ -243,6 +249,7 @@ def config_from_args(args: argparse.Namespace) -> pipeline.PipelineConfig:
             mask_high=args.mask_high,
             binary=args.binary,
             dilate=args.dilate,
+            feather=args.feather,
             heal=args.heal,
             heal_radius=args.heal_radius,
             opacity=args.opacity,
