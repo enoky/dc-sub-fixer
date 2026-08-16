@@ -359,6 +359,41 @@ def test_timeline_detection_check_spots_an_old_cache():
     )
 
 
+def _worker_result(frames):
+    """A detection result shaped exactly as detect_worker writes it."""
+    return {
+        "n_frames": len(frames),
+        "raw_text_frames": sum(1 for f in frames if f),
+        "text_frames": sum(1 for f in frames if f),
+        "min_track": 12,
+        "regions": [[regions.region_to_json(r) for r in f] for f in frames],
+    }
+
+
+def test_worker_result_parses_into_regions():
+    """The GUI once unpacked this by hand and got the dict's keys instead."""
+    region = regions.Region((0, 0, 200, 100), ((10, 10, 40, 40),))
+    parsed = [
+        [regions.region_from_json(e) for e in frame]
+        for frame in _worker_result([[], [region]])["regions"]
+    ]
+    assert parsed[0] == []
+    assert parsed[1] == [region]
+    assert parsed[1][0].box == (0, 0, 200, 100)
+    assert parsed[1][0].dets == ((10, 10, 40, 40),)
+
+
+def test_region_survives_a_json_text_round_trip():
+    """Through real serialisation, since lists come back where tuples went in."""
+    import json as _json
+
+    region = regions.Region((704, 288, 1216, 464), ((730, 362, 1188, 444),))
+    data = _json.loads(_json.dumps(_worker_result([[region]])))
+    back = regions.region_from_json(data["regions"][0][0])
+    assert back == region
+    assert isinstance(back.box, tuple) and isinstance(back.dets[0], tuple)
+
+
 def test_mask_store_round_trips_a_probability_map(tmp_path):
     store = session.MaskStore(str(tmp_path))
     prob = np.linspace(0, 1, 64 * 32, dtype=np.float32).reshape(32, 64)

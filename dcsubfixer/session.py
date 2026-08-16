@@ -282,12 +282,21 @@ class TuningSession:
         return min(counts) if counts else 0
 
     # -- detection ------------------------------------------------------
+    def set_timeline(self, data: dict) -> None:
+        """Adopt a detection result.
+
+        The only place a worker result is turned into regions. Callers used to
+        unpack it themselves, which silently produced garbage once entries
+        stopped being bare boxes: `tuple()` on the new dict yields its keys.
+        """
+        self.timeline = [[regions.region_from_json(e) for e in f] for f in data["regions"]]
+
     def load_timeline(self) -> bool:
         if not os.path.isfile(self.paths.timeline):
             return False
         with open(self.paths.timeline, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-        self.timeline = [[regions.region_from_json(e) for e in f] for f in data["regions"]]
+        self.set_timeline(data)
         return True
 
     def save_timeline(self, data: dict) -> None:

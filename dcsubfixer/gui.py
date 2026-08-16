@@ -746,7 +746,7 @@ class MainWindow(QMainWindow):
             self.lbl_detect.setText(f"could not read result — {exc}")
             return
         s = self.session
-        s.timeline = [[tuple(b) for b in boxes] for boxes in data["regions"]]
+        s.set_timeline(data)
         s.save_timeline(data)
         self.lbl_detect.setText(
             f"text in {data['text_frames']} of {data['n_frames']} frames · "
