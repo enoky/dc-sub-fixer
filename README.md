@@ -23,13 +23,28 @@ choosing settings by eye.
 Needs a CUDA GPU. Developed against an RTX 5080 (SM 12.0) on CUDA 13, Python
 3.12, Windows.
 
-```bash
-git clone https://github.com/ymy-k/Hi-SAM.git third_party/Hi-SAM
+On Windows, run **`install.bat`** (or `install.ps1` directly). It reads the CUDA
+version your driver supports, picks the matching torch and paddle wheel
+channels, builds `.venv`, clones Hi-SAM, fetches the SAM backbone checkpoint,
+and verifies the result — including running a convolution through Paddle in a
+subprocess, because a wrong cuDNN DLL path stays invisible until one is
+attempted.
+
+```
+install.bat                     # detect everything
+install.bat -Force              # rebuild .venv from scratch
+install.bat -SkipModels         # skip the 1.2 GB checkpoint download
+install.bat -TorchIndex https://download.pytorch.org/whl/cu126 `
+            -PaddleIndex https://www.paddlepaddle.org.cn/packages/stable/cu126/
 ```
 
-Then follow the install block at the top of [requirements.txt](requirements.txt) —
-the torch and paddle wheels come from their own package indexes, so the order
-matters.
+It leaves one thing to you: Hi-SAM's own `sam_tss_l_textseg.pth` has no direct
+download link, so fetch it from the [Hi-SAM README](https://github.com/ymy-k/Hi-SAM)
+and drop it in `models/`. The script says so if it is missing.
+
+To do it by hand instead, clone Hi-SAM into `third_party/Hi-SAM` and follow the
+install block at the top of [requirements.txt](requirements.txt) — the torch and
+paddle wheels come from their own package indexes, so the order matters.
 
 Put the checkpoints in `models/`:
 
