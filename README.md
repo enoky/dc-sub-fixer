@@ -190,6 +190,27 @@ has margin: an aircraft wall panel that the detector read as text for seven
 straight frames is cut by persistence at the default, and by confidence at
 `--det-box-thresh 0.7`.
 
+**Scene text inside a caption's outline.** Those two filters both act on whole
+detections, and there is a third case they cannot see. A region is a rectangle
+around one or more lines, and a rectangle drawn around two lines of different
+widths encloses corners that hold neither — where a label on a prop or a sign
+in the background may be sitting. Hi-SAM segments every glyph in what it is
+given, correctly, and that intruder lands in the depth map looking like part of
+the credit.
+
+Nothing about detection can fix it: on the frame this was found, the intruder
+was never detected at all, the two credit lines merge into one region at any
+`--merge-gap` because their boxes overlap, and no `--roi` separates text from a
+rectangle it sits inside.
+
+So each region carries the detections it was built from, and the mask is
+filtered back down to them — by connected component, not pixelwise, since
+clipping a blob in half just leaves a fragment that looks like a broken glyph.
+On that frame it removed all 683 intruding pixels and cost 3 of 18,668 real
+ones. Tune with `--gate-dilate` (slack around each detection, for descenders
+and tight boxes) and `--gate-min-inside`; `--no-gate` restores the old
+behaviour.
+
 **Choosing the grey level.** `--text-value auto` (the default) reads the level
 back out of the depth map, so the repaired text keeps the depth DepthCrafter
 assigned it. It samples an extreme percentile rather than the median, because
@@ -218,6 +239,8 @@ python -m dcsubfixer rgb.mp4 depth.mp4 out.mp4 --heal --mask-low 0.45 --mask-hig
 | --- | --- |
 | text missed entirely | lower `--det-box-thresh`, raise `--det-limit-side-len` |
 | non-text picked up (panels, textures, faces) | raise `--det-box-thresh` toward 0.8, raise `--min-track`, or `--roi 0,0.7,1,1` for subtitles only |
+| scene text appearing beside a caption | already filtered; if some survives, raise `--gate-min-inside` or lower `--gate-dilate` |
+| glyph edges or descenders clipped | raise `--gate-dilate`, or `--no-gate` |
 | glyphs still look soft | `--heal`, and narrow the window to `--mask-low 0.45 --mask-high 0.6` |
 | smeared halo remains around the text | `--heal`, raise `--heal-radius` |
 | glyphs too thin or too fat | `--dilate 1` / `--dilate -1` |

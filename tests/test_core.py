@@ -133,10 +133,20 @@ def test_jittering_boxes_collapse_to_one_stable_box():
     # The same caption detected one grid step taller on alternate frames.
     timeline = [[(400, 896, 1152, 992)], [(400, 896, 1152, 1008)]] * 6
     out = regions.smooth_timeline(timeline, regions.RegionConfig(min_track=2))
-    produced = {tuple(b) for boxes in out for b in boxes}
+    produced = {r.box for items in out for r in items}
     assert len(produced) == 1, f"expected one stable box, got {produced}"
     # The union, so no frame's own detection gets cropped.
     assert produced == {(400, 896, 1152, 1008)}
+
+
+def test_canonical_box_does_not_borrow_a_neighbours_detections():
+    """Only the outline is held steady; the filter stays per-frame."""
+    a = regions.Region((0, 0, 100, 50), ((10, 10, 40, 40),))
+    b = regions.Region((0, 0, 100, 56), ((60, 10, 90, 40),))
+    out = regions.smooth_timeline([[a], [b]] * 4, regions.RegionConfig(min_track=2))
+    assert {r.box for items in out for r in items} == {(0, 0, 100, 56)}
+    assert out[0][0].dets == ((10, 10, 40, 40),)
+    assert out[1][0].dets == ((60, 10, 90, 40),)
 
 
 def test_slowly_scrolling_text_is_tracked_but_not_frozen():
@@ -189,8 +199,11 @@ def test_frame_regions_merges_words_into_one_line():
     polys = [_poly(100, 900, 200, 940), _poly(210, 900, 320, 940)]
     out = regions.frame_regions(polys, (1920, 1080), regions.RegionConfig())
     assert len(out) == 1
-    x0, y0, x1, y1 = out[0]
+    x0, y0, x1, y1 = out[0].box
     assert x0 <= 100 and x1 >= 320
+    # Both words survive as separate detections, never unioned into the outline.
+    assert len(out[0].dets) == 2
+    assert out[0].box not in out[0].dets
 
 
 # -------------------------------------------------------------- composite
@@ -265,6 +278,85 @@ def test_composite_preserves_16_bit_precision_outside_the_mask():
     untouched = np.ones((40, 120), bool)
     untouched[10:14, 30:60] = False
     assert np.array_equal(out[untouched], depth[untouched])
+
+
+# ------------------------------------------------------ mask gating
+
+
+def _mask_with(shape, blobs):
+    """A probability map with a filled rectangle per blob, in region coords."""
+    m = np.zeros(shape, np.float32)
+    for x0, y0, x1, y1 in blobs:
+        m[y0:y1, x0:x1] = 1.0
+    return m
+
+
+def test_gate_drops_a_blob_that_sits_outside_every_detection():
+    # Region spans (0,0)-(200,100). Text was found on the right; something
+    # text-like also sits in the empty corner on the left.
+    region = regions.Region((0, 0, 200, 100), ((100, 10, 180, 40),))
+    prob = _mask_with((100, 200), [(110, 15, 170, 35), (10, 15, 60, 35)])
+    out = regions.gate_by_detections(prob, region, dilate=4, min_inside=0.5)
+    assert out[15:35, 110:170].min() == 1.0, "the detected text must survive intact"
+    assert out[15:35, 10:60].max() == 0.0, "the intruder must be gone"
+
+
+def test_gate_removes_a_blob_only_clipping_a_detection():
+    """The case a pixelwise clip gets wrong, leaving a fragment behind."""
+    region = regions.Region((0, 0, 200, 100), ((0, 50, 200, 90),))
+    # A blob mostly above the detection, dipping a few rows into it.
+    prob = _mask_with((100, 200), [(20, 30, 60, 56)])
+    out = regions.gate_by_detections(prob, region, dilate=0, min_inside=0.5)
+    assert out.max() == 0.0, "a mostly-outside blob should go entirely"
+
+
+def test_gate_keeps_glyphs_that_overhang_their_detection():
+    """Detector boxes are tight; a descender poking out must not be cut."""
+    region = regions.Region((0, 0, 200, 100), ((40, 40, 160, 60),))
+    prob = _mask_with((100, 200), [(50, 44, 150, 66)])  # overhangs below
+    out = regions.gate_by_detections(prob, region, dilate=8, min_inside=0.5)
+    assert out[44:66, 50:150].min() == 1.0
+
+
+def test_gate_uses_frame_coordinates_for_detections():
+    """Detections are absolute; the mask is relative to the region's origin."""
+    region = regions.Region((500, 300, 700, 400), ((600, 310, 680, 340),))
+    prob = _mask_with((100, 200), [(110, 15, 170, 35)])  # region-local, inside the det
+    out = regions.gate_by_detections(prob, region, dilate=4, min_inside=0.5)
+    assert out.max() == 1.0, "the detection was not translated into region space"
+
+
+def test_gate_is_a_no_op_without_detections():
+    region = regions.Region((0, 0, 200, 100), ())
+    prob = _mask_with((100, 200), [(10, 10, 60, 40)])
+    assert np.array_equal(regions.gate_by_detections(prob, region), prob)
+
+
+def test_gate_is_a_no_op_at_zero_min_inside():
+    region = regions.Region((0, 0, 200, 100), ((100, 10, 180, 40),))
+    prob = _mask_with((100, 200), [(10, 10, 60, 40)])
+    out = regions.gate_by_detections(prob, region, min_inside=0.0)
+    assert np.array_equal(out, prob)
+
+
+def test_legacy_timeline_entry_gates_to_the_whole_region():
+    """An old cache has no detections; it must not filter everything away."""
+    region = regions.region_from_json([0, 0, 200, 100])
+    assert region.dets == ((0, 0, 200, 100),)
+    prob = _mask_with((100, 200), [(10, 10, 60, 40)])
+    assert np.array_equal(regions.gate_by_detections(prob, region), prob)
+
+
+def test_region_json_round_trip():
+    region = regions.Region((0, 0, 200, 100), ((10, 10, 40, 40), (60, 10, 90, 40)))
+    assert regions.region_from_json(regions.region_to_json(region)) == region
+
+
+def test_timeline_detection_check_spots_an_old_cache():
+    assert not regions.timeline_has_detections([[[0, 0, 10, 10]]])
+    assert regions.timeline_has_detections(
+        [[{"box": [0, 0, 10, 10], "dets": [[1, 1, 5, 5]]}]]
+    )
 
 
 def test_mask_store_round_trips_a_probability_map(tmp_path):

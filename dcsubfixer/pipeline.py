@@ -24,7 +24,7 @@ from tqdm import tqdm
 
 from . import composite as comp
 from . import geometry, hisam, ocr, regions, video
-from .regions import Box
+from .regions import Box, Region
 
 
 @dataclass
@@ -41,6 +41,11 @@ class PipelineConfig:
     cache_tolerance: float = 2.0
     max_frames: Optional[int] = None
     timeline_path: Optional[str] = None
+    # Filtering the mask back down to where the detector found text. See
+    # regions.gate_by_detections.
+    gate: bool = True
+    gate_dilate: int = 8
+    gate_min_inside: float = 0.5
     debug_dir: Optional[str] = None
     debug_limit: int = 12
     quality: str = "lossless"
@@ -118,7 +123,7 @@ class MaskCache:
             del self._entries[key]
 
 
-def detect_pass(cfg: PipelineConfig) -> List[List[Box]]:
+def detect_pass(cfg: PipelineConfig) -> List[List[Region]]:
     """Pass 1 - OCR the clip and return a smoothed timeline of text regions.
 
     Runs in a subprocess: Paddle cannot share a process with torch on Windows
@@ -143,12 +148,18 @@ def detect_pass(cfg: PipelineConfig) -> List[List[Box]]:
             with open(cfg.timeline_path, "w", encoding="utf-8") as fh:
                 json.dump(result, fh)
 
-    timeline = [[tuple(b) for b in boxes] for boxes in result["regions"]]
+    raw = result["regions"]
+    timeline = [[regions.region_from_json(e) for e in frame] for frame in raw]
     print(
         f"  text detected in {result['raw_text_frames']}/{result['n_frames']} frames "
         f"-> {result['text_frames']} after temporal smoothing "
         f"(dropping tracks shorter than {result.get('min_track', '?')} frames)"
     )
+    if not regions.timeline_has_detections(raw):
+        print(
+            "  note: this cached timeline predates per-region detections, so masks "
+            "cannot be filtered. Delete it to regenerate."
+        )
     return timeline
 
 
@@ -172,7 +183,7 @@ def _run_detect_worker(request: dict) -> dict:
 
 def render_pass(
     cfg: PipelineConfig,
-    timeline: List[List[Box]],
+    timeline: List[List[Region]],
     rgb_info: video.VideoInfo,
     depth_info: video.VideoInfo,
     alignment: geometry.Alignment,
@@ -217,8 +228,8 @@ def render_pass(
         for idx, (rgb, planar) in enumerate(zip(rgb_frames, depth_frames)):
             if idx >= total:
                 break
-            boxes = timeline[idx]
-            if not boxes:
+            frame_regions = timeline[idx]
+            if not frame_regions:
                 # Written back untouched, so it re-encodes bit-for-bit.
                 writer.write(planar)
                 bar.update(1)
@@ -226,20 +237,26 @@ def render_pass(
             depth = video.luma(planar, dh, dw)
 
             prob_buffer[:] = 0.0
-            for box in boxes:
-                x0, y0, x1, y1 = box
+            for region in frame_regions:
+                x0, y0, x1, y1 = region.box
                 crop = rgb[y0:y1, x0:x1]
                 if crop.size == 0:
                     continue
-                mask = cache.get(box, crop, idx)
+                mask = cache.get(region.box, crop, idx)
                 if mask is None:
                     mask = segmenter.segment(crop)
                     segmentations += 1
-                    cache.put(box, crop, mask, idx)
+                    cache.put(region.box, crop, mask, idx)
+                # Cached raw, filtered on use, so the gate stays adjustable
+                # without re-running Hi-SAM.
+                if cfg.gate:
+                    mask = regions.gate_by_detections(
+                        mask, region, cfg.gate_dilate, cfg.gate_min_inside
+                    )
                 np.maximum(prob_buffer[y0:y1, x0:x1], mask, out=prob_buffer[y0:y1, x0:x1])
 
             depth_prob = alignment.warp(prob_buffer)
-            depth_boxes = [alignment.map_box(b) for b in boxes]
+            depth_boxes = [alignment.map_box(r.box) for r in frame_regions]
             region_mask = None
             if cfg.composite.heal:
                 region_mask = comp.stack_region_masks((dw, dh), depth_boxes)
@@ -254,7 +271,7 @@ def render_pass(
 
             if cfg.debug_dir and debug_written < cfg.debug_limit:
                 _write_debug(
-                    cfg.debug_dir, idx, rgb, boxes, depth, out, depth_prob, max_value
+                    cfg.debug_dir, idx, rgb, frame_regions, depth, out, depth_prob, max_value
                 )
                 debug_written += 1
 
@@ -277,14 +294,14 @@ def _write_debug(
     debug_dir: str,
     idx: int,
     rgb: np.ndarray,
-    boxes: List[Box],
+    frame_regions: List[Region],
     depth_before: np.ndarray,
     depth_after: np.ndarray,
     prob: np.ndarray,
     max_value: int,
 ) -> None:
     annotated = rgb.copy()
-    for x0, y0, x1, y1 in boxes:
+    for x0, y0, x1, y1 in (r.box for r in frame_regions):
         cv2.rectangle(annotated, (x0, y0), (x1, y1), (0, 255, 0), 2)
     h = depth_before.shape[0]
     scale = h / annotated.shape[0]

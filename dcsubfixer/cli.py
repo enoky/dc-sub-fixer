@@ -111,6 +111,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="bridge detection dropouts up to this many frames long")
     g.add_argument("--sticky-iou", type=float, default=0.8,
                    help="hold a region box steady while it overlaps its run this much")
+    g.add_argument("--no-gate", dest="gate", action="store_false",
+                   help="keep every glyph Hi-SAM finds inside a region, including any "
+                        "scene text that happens to fall in the same rectangle")
+    g.add_argument("--gate-dilate", type=int, default=8,
+                   help="pixels of slack around each detection when filtering the mask")
+    g.add_argument("--gate-min-inside", type=float, default=0.5,
+                   help="fraction of a stroke blob that must lie on a detection for it "
+                        "to be kept (0 disables filtering)")
     g.add_argument("--cache-tolerance", type=float, default=2.0,
                    help="mean pixel difference below which a region counts as unchanged "
                         "and its mask is reused")
@@ -171,6 +179,9 @@ def config_from_args(args: argparse.Namespace) -> pipeline.PipelineConfig:
         align=args.align,
         ocr_stride=args.ocr_stride,
         cache_tolerance=args.cache_tolerance,
+        gate=args.gate,
+        gate_dilate=args.gate_dilate,
+        gate_min_inside=args.gate_min_inside,
         max_frames=args.max_frames,
         timeline_path=args.timeline,
         debug_dir=args.debug_dir,

@@ -166,15 +166,19 @@ class FramePanels:
 
     index: int
     rgb: np.ndarray                 # HxWx3 uint8, source resolution
-    boxes: List[Box]                # text regions, RGB coordinates
+    regions: List[regions.Region]   # text regions, RGB coordinates
     depth_before: np.ndarray        # HxW uint16, depth resolution
     depth_after: np.ndarray         # HxW uint16
     prob: np.ndarray                # HxW float32 in depth space
     value_range: Tuple[float, float]  # shared display window for the two depths
 
     @property
+    def boxes(self) -> List[Box]:
+        return [r.box for r in self.regions]
+
+    @property
     def changed(self) -> bool:
-        return bool(self.boxes) and not np.array_equal(self.depth_before, self.depth_after)
+        return bool(self.regions) and not np.array_equal(self.depth_before, self.depth_after)
 
 
 @dataclass
@@ -224,7 +228,15 @@ class TuningSession:
         hisam_checkpoint: Optional[str] = None,
         region: Optional[regions.RegionConfig] = None,
         segmenter: Optional[hisam.SegmenterConfig] = None,
+        gate: bool = True,
+        gate_dilate: int = 8,
+        gate_min_inside: float = 0.5,
     ) -> None:
+        # Masks are cached raw and filtered on use, so these stay adjustable
+        # without re-running Hi-SAM.
+        self.gate = gate
+        self.gate_dilate = gate_dilate
+        self.gate_min_inside = gate_min_inside
         self.paths = SessionPaths(
             rgb_path, depth_path, cache_dir or default_cache_dir(rgb_path, depth_path)
         )
@@ -247,7 +259,7 @@ class TuningSession:
         self.depth_reader = FrameReader(depth_path, self.pix_fmt)
         self.masks = MaskStore(self.paths.masks)
 
-        self.timeline: List[List[Box]] = []
+        self.timeline: List[List[regions.Region]] = []
         self._segmenter: Optional[hisam.StrokeSegmenter] = None
         self._mem: Dict[Tuple[int, Box], np.ndarray] = {}
 
@@ -275,7 +287,7 @@ class TuningSession:
             return False
         with open(self.paths.timeline, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-        self.timeline = [[tuple(b) for b in boxes] for boxes in data["regions"]]
+        self.timeline = [[regions.region_from_json(e) for e in f] for f in data["regions"]]
         return True
 
     def save_timeline(self, data: dict) -> None:
@@ -334,10 +346,10 @@ class TuningSession:
         return got
 
     def is_cached(self, frame: int) -> bool:
-        boxes = self.timeline[frame] if frame < len(self.timeline) else []
+        items = self.timeline[frame] if frame < len(self.timeline) else []
         return all(
-            (frame, b) in self._mem or os.path.isfile(self.masks.path_for(frame, b))
-            for b in boxes
+            (frame, r.box) in self._mem or os.path.isfile(self.masks.path_for(frame, r.box))
+            for r in items
         )
 
     # -- rendering ------------------------------------------------------
@@ -351,26 +363,30 @@ class TuningSession:
         planar = self.depth_reader.frame(frame)
         dh, dw = self.depth_info.height, self.depth_info.width
         before = video.luma(planar, dh, dw).copy()
-        boxes = list(self.timeline[frame]) if frame < len(self.timeline) else []
+        items = list(self.timeline[frame]) if frame < len(self.timeline) else []
 
         prob_rgb = np.zeros((self.rgb_info.height, self.rgb_info.width), np.float32)
-        for box in boxes:
-            x0, y0, x1, y1 = box
+        for region in items:
+            x0, y0, x1, y1 = region.box
             if x1 <= x0 or y1 <= y0:
                 continue
             if not segment and not self.is_cached(frame):
                 continue
-            mask = self.mask_for(frame, box, rgb)
+            mask = self.mask_for(frame, region.box, rgb)
+            if self.gate:
+                mask = regions.gate_by_detections(
+                    mask, region, self.gate_dilate, self.gate_min_inside
+                )
             np.maximum(prob_rgb[y0:y1, x0:x1], mask, out=prob_rgb[y0:y1, x0:x1])
 
         prob = self.alignment.warp(prob_rgb)
-        depth_boxes = [self.alignment.map_box(b) for b in boxes]
+        depth_boxes = [self.alignment.map_box(r.box) for r in items]
         region_mask = comp.stack_region_masks((dw, dh), depth_boxes) if cfg.heal else None
         after = comp.composite_frame(before, prob, cfg, depth_boxes, region_mask, self.max_value)
 
         lo = float(min(before.min(), after.min()))
         hi = float(max(before.max(), after.max()))
-        return FramePanels(frame, rgb, boxes, before, after, prob, (lo, hi))
+        return FramePanels(frame, rgb, items, before, after, prob, (lo, hi))
 
     def close(self) -> None:
         self.rgb_reader.close()

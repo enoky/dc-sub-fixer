@@ -6,16 +6,35 @@ mask cache (forcing needless Hi-SAM runs) and it makes the composited glyphs
 shimmer. Boxes are therefore merged, snapped to a grid, and then linked into
 tracks across time so isolated false positives can be dropped and one-frame
 dropouts filled.
+
+A region keeps the detections it was built from, not just its own outline. The
+outline is a rectangle around one or more lines of text, and a rectangle drawn
+around two lines of different widths encloses corners that hold neither. Hi-SAM
+segments every glyph in what it is given, so anything text-like sitting in
+those corners - a label on a prop, a sign in the background - comes back in the
+mask looking exactly like a caption. Keeping the detections lets the mask be
+filtered back down to where text was actually found; see `gate_by_detections`.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple, Union
 
+import cv2
 import numpy as np
 
 Box = Tuple[int, int, int, int]  # x0, y0, x1, y1 (exclusive on x1/y1)
+
+
+class Region(NamedTuple):
+    """A crop to segment, plus the detections that justify it."""
+
+    box: Box
+    dets: Tuple[Box, ...] = ()
+
+
+RegionLike = Union[Region, Box]
 
 # Shortest time a real caption or credit stays on screen, near enough. Anything
 # briefer than this cannot be read and is treated as a false detection.
@@ -49,6 +68,14 @@ class RegionConfig:
     min_track: Optional[int] = None
     max_gap: int = 3       # bridge dropouts up to this many frames long
     sticky_iou: float = 0.8  # hold a box steady while it overlaps its run this much
+
+
+def as_region(item: RegionLike) -> Region:
+    """Accept a bare box where a region is expected, gating to the box itself."""
+    if isinstance(item, Region):
+        return item
+    box = tuple(item)  # type: ignore[arg-type]
+    return Region(box, (box,))
 
 
 def polys_to_boxes(polys: Sequence[np.ndarray]) -> List[Box]:
@@ -92,21 +119,44 @@ def _union(a: Box, b: Box) -> Box:
     return (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
 
 
+def _dedupe(boxes: Iterable[Box]) -> Tuple[Box, ...]:
+    """Drop exact duplicates while keeping order.
+
+    Deliberately not a merge: two detections that overlap are usually two lines
+    of the same caption, and unioning them would recreate the very rectangle
+    whose empty corners the detections exist to exclude.
+    """
+    seen, out = set(), []
+    for b in boxes:
+        if b not in seen:
+            seen.add(b)
+            out.append(b)
+    return tuple(out)
+
+
 def merge_boxes(boxes: Sequence[Box], gap: int) -> List[Box]:
     """Union boxes that sit within `gap` pixels of each other."""
-    merged = list(boxes)
+    return [r.box for r in merge_regions([as_region(b) for b in boxes], gap)]
+
+
+def merge_regions(items: Sequence[RegionLike], gap: int) -> List[Region]:
+    """Union regions whose boxes sit within `gap` pixels, keeping every detection."""
+    merged = [as_region(i) for i in items]
     changed = True
     while changed:
         changed = False
-        out: List[Box] = []
-        for box in merged:
+        out: List[Region] = []
+        for region in merged:
             for i, existing in enumerate(out):
-                if _overlaps(existing, box, gap):
-                    out[i] = _union(existing, box)
+                if _overlaps(existing.box, region.box, gap):
+                    out[i] = Region(
+                        _union(existing.box, region.box),
+                        _dedupe(existing.dets + region.dets),
+                    )
                     changed = True
                     break
             else:
-                out.append(box)
+                out.append(region)
         merged = out
     return merged
 
@@ -124,14 +174,14 @@ def stabilise(box: Box, frame_size: Tuple[int, int], cfg: RegionConfig) -> Box:
 
 def frame_regions(
     polys: Sequence[np.ndarray], frame_size: Tuple[int, int], cfg: RegionConfig
-) -> List[Box]:
+) -> List[Region]:
     boxes = filter_boxes(polys_to_boxes(polys), frame_size, cfg)
     if not boxes:
         return []
-    merged = merge_boxes(boxes, cfg.merge_gap)
-    snapped = [stabilise(b, frame_size, cfg) for b in merged]
+    merged = merge_regions([Region(b, (b,)) for b in boxes], cfg.merge_gap)
+    snapped = [Region(stabilise(r.box, frame_size, cfg), r.dets) for r in merged]
     # Padding can push neighbours into overlap; fold those together again.
-    return merge_boxes(snapped, 0)
+    return merge_regions(snapped, 0)
 
 
 def iou(a: Box, b: Box) -> float:
@@ -147,23 +197,24 @@ def iou(a: Box, b: Box) -> float:
 
 @dataclass
 class Track:
-    boxes: Dict[int, Box] = field(default_factory=dict)  # frame index -> box
+    regions: Dict[int, Region] = field(default_factory=dict)  # frame index -> region
     last_frame: int = -1
 
     @property
     def span(self) -> int:
-        return len(self.boxes)
+        return len(self.regions)
 
 
-def build_tracks(per_frame: Sequence[List[Box]], iou_thresh: float = 0.3) -> List[Track]:
+def build_tracks(per_frame: Sequence[List[RegionLike]], iou_thresh: float = 0.3) -> List[Track]:
     """Link regions across frames into tracks by box overlap."""
     tracks: List[Track] = []
-    for idx, boxes in enumerate(per_frame):
+    for idx, items in enumerate(per_frame):
         available = [t for t in tracks if idx - t.last_frame <= 12]
-        for box in boxes:
+        for item in items:
+            region = as_region(item)
             best, best_iou = None, iou_thresh
             for track in available:
-                score = iou(track.boxes[track.last_frame], box)
+                score = iou(track.regions[track.last_frame].box, region.box)
                 if score > best_iou:
                     best, best_iou = track, score
             if best is None:
@@ -174,35 +225,35 @@ def build_tracks(per_frame: Sequence[List[Box]], iou_thresh: float = 0.3) -> Lis
                 # overwriting, so two regions never collapse into one.
                 best = Track()
                 tracks.append(best)
-            best.boxes[idx] = box
+            best.regions[idx] = region
             best.last_frame = idx
     return tracks
 
 
 def _run_union(track: "Track", frames: Sequence[int]) -> Box:
-    box = track.boxes[frames[0]]
+    box = track.regions[frames[0]].box
     for f in frames[1:]:
-        box = _union(box, track.boxes[f])
+        box = _union(box, track.regions[f].box)
     return box
 
 
 def smooth_timeline(
-    per_frame: Sequence[List[Box]],
+    per_frame: Sequence[List[RegionLike]],
     cfg: RegionConfig,
     iou_thresh: float = 0.3,
     min_track: Optional[int] = None,
-) -> List[List[Box]]:
+) -> List[List[Region]]:
     """Drop short-lived detections and bridge brief dropouts within a track."""
     if min_track is None:
         min_track = cfg.min_track if cfg.min_track is not None else 2
     tracks = build_tracks(per_frame, iou_thresh)
-    out: List[List[Box]] = [[] for _ in per_frame]
+    out: List[List[Region]] = [[] for _ in per_frame]
     n = len(per_frame)
 
     for track in tracks:
         if track.span < min_track:
             continue
-        frames = sorted(track.boxes)
+        frames = sorted(track.regions)
 
         # Hold the box still while it keeps covering the same text. Snapping to
         # a grid is not enough on its own: a detection whose edge sits near a
@@ -216,27 +267,97 @@ def smooth_timeline(
         # breaks the run and starts a new one. A run that does merge two
         # different captions is still safe: the mask cache compares pixels, not
         # just boxes, so the change is caught there.
+        #
+        # Only the outline is canonicalised. Each frame keeps its own
+        # detections, because those are what the mask is filtered against and
+        # borrowing a neighbour's would loosen the filter for no gain.
         runs: List[List[int]] = []
         for f in frames:
-            if runs and iou(_run_union(track, runs[-1]), track.boxes[f]) >= cfg.sticky_iou:
+            if runs and iou(_run_union(track, runs[-1]), track.regions[f].box) >= cfg.sticky_iou:
                 runs[-1].append(f)
             else:
                 runs.append([f])
         for run in runs:
             canonical = _run_union(track, run)
             for f in run:
-                track.boxes[f] = canonical
+                track.regions[f] = Region(canonical, track.regions[f].dets)
 
-        filled = dict(track.boxes)
+        filled = dict(track.regions)
         for a, b in zip(frames, frames[1:]):
             gap = b - a - 1
             if 0 < gap <= cfg.max_gap:
-                # Hold the earlier box across the dropout: text that flickers out
-                # for a frame or two is nearly always still on screen.
+                # Hold the earlier region across the dropout: text that flickers
+                # out for a frame or two is nearly always still on screen. Its
+                # detections come along, so the bridged frames stay filterable.
                 for f in range(a + 1, b):
-                    filled[f] = track.boxes[a]
-        for f, box in filled.items():
+                    filled[f] = track.regions[a]
+        for f, region in filled.items():
             if 0 <= f < n:
-                out[f].append(box)
+                out[f].append(region)
 
-    return [merge_boxes(boxes, 0) if boxes else [] for boxes in out]
+    return [merge_regions(items, 0) if items else [] for items in out]
+
+
+# ---------------------------------------------------------------- serialising
+def region_to_json(region: Region) -> dict:
+    return {"box": list(region.box), "dets": [list(d) for d in region.dets]}
+
+
+def region_from_json(entry) -> Region:
+    """Read a region back, tolerating timelines written before detections were kept."""
+    if isinstance(entry, dict):
+        box = tuple(entry["box"])
+        dets = tuple(tuple(d) for d in entry.get("dets") or ())
+        return Region(box, dets or (box,))
+    # A bare box from an older cache: gate to the whole region, i.e. no filtering.
+    box = tuple(entry)
+    return Region(box, (box,))
+
+
+def timeline_has_detections(raw: Sequence[Sequence]) -> bool:
+    """Whether a loaded timeline carries real detections, or just outlines."""
+    for frame in raw:
+        for entry in frame:
+            return isinstance(entry, dict) and bool(entry.get("dets"))
+    return True
+
+
+# -------------------------------------------------------------------- gating
+def gate_by_detections(
+    prob: np.ndarray,
+    region: Region,
+    dilate: int = 8,
+    min_inside: float = 0.5,
+) -> np.ndarray:
+    """Drop stroke blobs that are not where the detector found text.
+
+    `prob` covers `region.box`; the detections are in frame coordinates.
+
+    Whole connected components are kept or dropped, rather than the mask being
+    clipped pixelwise to the detections. A caption's outline routinely clips
+    the corner of some unrelated piece of scene text, and clipping pixelwise
+    leaves that fragment behind looking like a broken glyph. A blob is the
+    natural unit: either it is a glyph the detector found, or it is not.
+    """
+    if not region.dets or min_inside <= 0.0:
+        return prob
+
+    h, w = prob.shape
+    x0, y0 = region.box[0], region.box[1]
+    gate = np.zeros((h, w), np.uint8)
+    for dx0, dy0, dx1, dy1 in region.dets:
+        cv2.rectangle(gate, (dx0 - x0, dy0 - y0), (dx1 - x0 - 1, dy1 - y0 - 1), 1, -1)
+    if dilate > 0:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate * 2 + 1,) * 2)
+        gate = cv2.dilate(gate, kernel)
+
+    binary = (prob > 0.5).astype(np.uint8)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    if count <= 1:
+        return prob
+
+    areas = stats[:, cv2.CC_STAT_AREA].astype(np.float64)
+    inside = np.bincount(labels[gate > 0].ravel(), minlength=count).astype(np.float64)
+    keep = inside / np.maximum(areas, 1.0) >= min_inside
+    keep[0] = False  # background
+    return prob * keep[labels]

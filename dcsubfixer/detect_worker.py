@@ -22,7 +22,7 @@ from typing import List
 from tqdm import tqdm
 
 from . import ocr, regions, video
-from .regions import Box
+from .regions import Region
 
 
 def detect(request: dict, progress: bool = False) -> dict:
@@ -40,9 +40,9 @@ def detect(request: dict, progress: bool = False) -> dict:
 
     detector = ocr.TextDetector(det_cfg)
 
-    per_frame: List[List[Box]] = []
+    per_frame: List[List[Region]] = []
     batch, batch_idx = [], []
-    last: List[Box] = []
+    last: List[Region] = []
 
     def flush() -> None:
         nonlocal last
@@ -88,7 +88,9 @@ def detect(request: dict, progress: bool = False) -> dict:
         "raw_text_frames": sum(1 for b in per_frame if b),
         "text_frames": sum(1 for b in smoothed if b),
         "min_track": min_track,
-        "regions": [[list(b) for b in boxes] for boxes in smoothed],
+        # Each region carries the detections it was built from, so the mask can
+        # later be filtered back down to where text was actually found.
+        "regions": [[regions.region_to_json(r) for r in items] for items in smoothed],
     }
 
 
