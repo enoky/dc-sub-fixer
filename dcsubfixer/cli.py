@@ -99,6 +99,12 @@ def build_parser() -> argparse.ArgumentParser:
                         "Judging frames individually forces the bar high enough to "
                         "survive a caption's weakest moment, which then cuts the fades "
                         "off every real one")
+    g.add_argument("--rec-score", type=float, default=0.55,
+                   help="read each run of text back with PP-OCRv6's recogniser and "
+                        "keep it only if it scores this well. Scene texture reads as "
+                        "gibberish whatever its angle or motion. 0 disables it")
+    g.add_argument("--rec-min-chars", type=int, default=2,
+                   help="a run must read back as at least this many characters")
     g.add_argument("--max-motion", type=float, default=0.02,
                    help="reject a run whose box typically moves more than this "
                         "fraction of its own text height per frame. Captions are "
@@ -218,6 +224,8 @@ def config_from_args(args: argparse.Namespace) -> pipeline.PipelineConfig:
             min_height=args.min_height,
             max_tilt=args.max_tilt,
             max_motion=args.max_motion,
+            rec_score=args.rec_score,
+            rec_min_chars=args.rec_min_chars,
             track_score=args.track_score,
             roi=args.roi,
             min_track=args.min_track,

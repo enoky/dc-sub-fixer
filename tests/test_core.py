@@ -389,6 +389,51 @@ def test_two_tracks_are_judged_separately():
     assert kept == {good}
 
 
+def test_a_track_filter_gets_the_last_word():
+    box = (400, 300, 800, 380)
+    timeline = [[regions.Region(box, (box,), 0.95)] for _ in range(20)]
+    cfg = regions.RegionConfig(min_track=2)
+    assert any(regions.smooth_timeline(timeline, cfg))
+    assert not any(regions.smooth_timeline(timeline, cfg, track_filter=lambda t: False))
+
+
+def test_the_track_filter_runs_once_per_track_not_per_frame():
+    """The whole reason recognition is affordable at all."""
+    a, b = (100, 100, 400, 160), (1400, 600, 1700, 660)
+    timeline = [[regions.Region(a, (a,), 0.95), regions.Region(b, (b,), 0.95)]
+                for _ in range(40)]
+    calls = []
+    regions.smooth_timeline(timeline, regions.RegionConfig(min_track=2),
+                            track_filter=lambda t: calls.append(t) or True)
+    assert len(calls) == 2, f"expected one call per track, got {len(calls)}"
+
+
+def test_the_track_filter_sees_a_whole_track():
+    box = (400, 300, 800, 380)
+    timeline = [[regions.Region(box, (box,), 0.4 + 0.02 * i)] for i in range(20)]
+    seen = {}
+
+    def judge(track):
+        seen["span"] = track.span
+        seen["peak"] = track.peak_score
+        return True
+
+    regions.smooth_timeline(timeline, regions.RegionConfig(min_track=2, track_score=0.0),
+                            track_filter=judge)
+    assert seen["span"] == 20
+    assert seen["peak"] == pytest.approx(0.78)
+
+
+def test_the_track_filter_is_not_asked_about_tracks_already_rejected():
+    """It is the expensive check, so the cheap ones go first."""
+    box = (400, 300, 800, 380)
+    timeline = [[regions.Region(box, (box,), 0.1)] for _ in range(20)]
+    calls = []
+    regions.smooth_timeline(timeline, regions.RegionConfig(min_track=2, track_score=0.6),
+                            track_filter=lambda t: calls.append(t) or True)
+    assert calls == []
+
+
 def _moving_timeline(step, n=20, box=(400, 300, 800, 380), score=0.95):
     """A track whose box shifts by `step` pixels each frame."""
     out = []

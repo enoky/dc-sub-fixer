@@ -18,112 +18,13 @@ import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-import av
 import cv2
 import numpy as np
 
 from . import composite as comp
 from . import geometry, hisam, regions, video
 from .regions import Box
-
-
-class FrameReader:
-    """Random access to video frames, by frame index.
-
-    PyAV decodes forward, so a jump means seeking to the keyframe at or before
-    the target and decoding up to it. Frame identity comes from the packet
-    timestamp rather than a running count, because a seek lands wherever the
-    keyframe is and counting from there drifts.
-    """
-
-    # Decoding forward is cheaper than a seek for small hops, which is the
-    # common case when stepping through frames.
-    FORWARD_LIMIT = 48
-
-    def __init__(self, path: str, fmt: str = "rgb24", cache_size: int = 8) -> None:
-        self.path = path
-        self.fmt = fmt
-        self.info = video.probe(path)
-        self._container = av.open(path)
-        self._stream = self._container.streams.video[0]
-        self._stream.thread_type = "AUTO"
-        self._time_base = self._stream.time_base
-        self._rate = self._stream.average_rate
-        self._start = self._stream.start_time or 0
-        self._decoder = None
-        self._position = -1  # index of the last frame handed out
-        self._cache: Dict[int, np.ndarray] = {}
-        self._cache_order: List[int] = []
-        self._cache_size = cache_size
-
-    # -- index/timestamp conversion -------------------------------------
-    def _index_of(self, frame) -> Optional[int]:
-        pts = frame.pts if frame.pts is not None else frame.dts
-        if pts is None:
-            return None
-        return int(round(float((pts - self._start) * self._time_base * self._rate)))
-
-    def _pts_of(self, index: int) -> int:
-        return int(index / self._rate / self._time_base) + self._start
-
-    # -- cache ----------------------------------------------------------
-    def _remember(self, index: int, arr: np.ndarray) -> None:
-        if index in self._cache:
-            return
-        self._cache[index] = arr
-        self._cache_order.append(index)
-        while len(self._cache_order) > self._cache_size:
-            del self._cache[self._cache_order.pop(0)]
-
-    # -- reading --------------------------------------------------------
-    def _restart(self, index: int) -> None:
-        self._container.seek(self._pts_of(index), stream=self._stream, backward=True)
-        self._decoder = self._container.decode(self._stream)
-        self._position = -1
-
-    def frame(self, index: int) -> np.ndarray:
-        if index < 0:
-            raise IndexError(index)
-        hit = self._cache.get(index)
-        if hit is not None:
-            return hit
-
-        if self._decoder is None or index <= self._position or index - self._position > self.FORWARD_LIMIT:
-            self._restart(index)
-
-        last = None
-        for frame in self._decoder:
-            idx = self._index_of(frame)
-            if idx is None:
-                continue
-            self._position = idx
-            if idx > index:
-                # Overshot: the seek landed past the target, back up further.
-                break
-            last = frame
-            if idx == index:
-                arr = frame.to_ndarray(format=self.fmt)
-                self._remember(index, arr)
-                return arr
-
-        if last is not None and self._index_of(last) is not None:
-            # Ran out of frames; the clip may be shorter than asked for.
-            arr = last.to_ndarray(format=self.fmt)
-            self._remember(index, arr)
-            return arr
-        raise IndexError(f"frame {index} not found in {self.path}")
-
-    def close(self) -> None:
-        try:
-            self._container.close()
-        except Exception:
-            pass
-
-    def __enter__(self) -> "FrameReader":
-        return self
-
-    def __exit__(self, *exc) -> None:
-        self.close()
+from .video import FrameReader  # re-exported: callers here have always used it
 
 
 class MaskStore:

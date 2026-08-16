@@ -79,7 +79,10 @@ def detect(request: dict, progress: bool = False) -> dict:
         per_frame.append(list(last))
 
     min_track = regions.resolve_min_track(reg_cfg, float(info.fps))
-    smoothed = regions.smooth_timeline(per_frame, reg_cfg, min_track=min_track)
+    recogniser = _build_recogniser(reg_cfg, rgb_path, progress)
+    smoothed = regions.smooth_timeline(
+        per_frame, reg_cfg, min_track=min_track, track_filter=recogniser
+    )
     return {
         "rgb_path": rgb_path,
         "width": info.width,
@@ -88,10 +91,52 @@ def detect(request: dict, progress: bool = False) -> dict:
         "raw_text_frames": sum(1 for b in per_frame if b),
         "text_frames": sum(1 for b in smoothed if b),
         "min_track": min_track,
+        "recognised": getattr(recogniser, "verdicts", []) if recogniser else [],
         # Each region carries the detections it was built from, so the mask can
         # later be filtered back down to where text was actually found.
         "regions": [[regions.region_to_json(r) for r in items] for items in smoothed],
     }
+
+
+def _build_recogniser(cfg: regions.RegionConfig, rgb_path: str, progress: bool):
+    """A track_filter that keeps a run only if its text reads back as words.
+
+    Runs once per surviving run, on its single most confident frame, so the
+    whole clip costs a handful of recognitions rather than one per frame.
+    Scene texture that the detector called text comes back as gibberish with a
+    low score, whatever its angle, contrast or motion - the reason this is
+    worth the extra model is that it does not depend on how the shot was made.
+    """
+    if not cfg.rec_score:
+        return None
+
+    reader = video.FrameReader(rgb_path, "rgb24")
+    recogniser = ocr.TextRecognizer()
+    verdicts = []
+
+    def judge(track: regions.Track) -> bool:
+        # The frame where the detector was surest is the best one to read.
+        best = max(track.regions, key=lambda f: track.regions[f].score)
+        region = track.regions[best]
+        frame = reader.frame(best)
+        # Read the detections, not the region: the region's outline can enclose
+        # empty corners, and recognising those only adds noise.
+        crops = []
+        for x0, y0, x1, y1 in (region.dets or (region.box,)):
+            crop = frame[max(0, y0):y1, max(0, x0):x1]
+            if crop.size and crop.shape[0] >= 8 and crop.shape[1] >= 8:
+                crops.append(crop)
+        if not crops:
+            return True  # nothing readable to judge on; leave it to the other filters
+
+        results = recogniser.read(crops)
+        text, score = max(results, key=lambda r: r[1]) if results else ("", 0.0)
+        readable = len(text.strip()) >= cfg.rec_min_chars and score >= cfg.rec_score
+        verdicts.append((best, text.strip()[:40], round(score, 3), readable))
+        return readable
+
+    judge.verdicts = verdicts  # type: ignore[attr-defined]
+    return judge
 
 
 def main(argv: List[str]) -> int:

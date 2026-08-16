@@ -233,6 +233,26 @@ grid-snapped first, so a drift of a few pixels a frame stays in the same cell
 most frames and the median step is zero. Raise `--max-motion` if a fast roll is
 being cut.
 
+**Reading the text back.** The filters above all infer text from how it looks
+or behaves. The last one simply reads it: PP-OCRv6's recogniser runs on each
+surviving run and it is kept only if the result is real text. On the credit clip
+the runs come back as `PRESENTS` (1.00), `SUPERGIRL` (1.00), `MILLY ALCOCK`
+(1.00), `EVE RIDLEY` (0.99) — and the two survivors the other filters had missed
+read `UmazuA` (0.38) and a lone `目` (0.75). The first fails on score, the second
+on `--rec-min-chars`, since a single character is not a caption however
+confidently it is read.
+
+This is the only check that does not care how the shot was made, which is why
+it is worth a second model. It is affordable because it runs **once per run**,
+on that run's most confident frame — a handful of recognitions for a whole clip,
+not one per frame. It also reads the detections rather than the region outline,
+whose empty corners would only add noise.
+
+Real credits score 0.89 and up here against 0.38 for gibberish, so the 0.55
+default sits in a wide gap; 0.9 starts cutting real ones, because a stylised
+face gets misread (`MATTHIAS SCHOENAERTS` comes back as `FATCHIAS SLHO-NAERT`
+at 0.89) while still being obviously a caption.
+
 **Scene text inside a caption's outline.** Those two filters both act on whole
 detections, and there is a third case they cannot see. A region is a rectangle
 around one or more lines, and a rectangle drawn around two lines of different
@@ -285,6 +305,7 @@ python -m dcsubfixer rgb.mp4 depth.mp4 out.mp4 --heal --mask-low 0.45 --mask-hig
 | slanted or stylised titles rejected | raise `--max-tilt`, or 90 to disable |
 | non-text picked up (panels, textures, faces) | raise `--track-score`, tighten `--max-tilt` or `--max-motion`, raise `--min-track`, or `--roi 0,0.7,1,1` |
 | a fast credit roll is dropped | raise `--max-motion` |
+| a stylised title is rejected | lower `--rec-score`, or 0 to skip recognition |
 | scene text appearing beside a caption | already filtered; if some survives, raise `--gate-min-inside` or lower `--gate-dilate` |
 | glyph edges or descenders clipped | raise `--gate-dilate`, or `--no-gate` |
 | glyphs still look soft | `--heal`, and narrow the window to `--mask-low 0.45 --mask-high 0.6` |

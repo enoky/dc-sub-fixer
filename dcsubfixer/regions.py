@@ -19,7 +19,8 @@ filtered back down to where text was actually found; see `gate_by_detections`.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import (Callable, Dict, Iterable, List, NamedTuple, Optional, Sequence,
+                    Tuple, Union)
 
 import cv2
 import numpy as np
@@ -99,6 +100,11 @@ class RegionConfig:
     # because boxes are grid-snapped first, so a scrolling credit roll still
     # passes - raise this or set it to None if a fast roll is being cut.
     max_motion: Optional[float] = 0.02
+    # Reading the text back is the one check that does not depend on how the
+    # footage was shot, but it needs the video, so it lives in the worker; see
+    # smooth_timeline's track_filter. 0 disables it.
+    rec_score: float = 0.55
+    rec_min_chars: int = 2
     # A track is kept when its *best* frame clears this. Judging each frame
     # alone forces the threshold high enough to survive a caption's weakest
     # moment, which then cuts the fades at either end of every real one.
@@ -354,8 +360,15 @@ def smooth_timeline(
     cfg: RegionConfig,
     iou_thresh: float = 0.3,
     min_track: Optional[int] = None,
+    track_filter: Optional[Callable[["Track"], bool]] = None,
 ) -> List[List[Region]]:
-    """Drop short-lived detections and bridge brief dropouts within a track."""
+    """Drop short-lived detections and bridge brief dropouts within a track.
+
+    `track_filter` gets the last word on a track that has passed the cheap
+    checks, and is where anything needing the video itself belongs - reading
+    the text back, say. It is called once per surviving track rather than once
+    per frame, which is what makes an expensive check affordable.
+    """
     if min_track is None:
         min_track = cfg.min_track if cfg.min_track is not None else 2
     tracks = build_tracks(per_frame, iou_thresh)
@@ -376,6 +389,9 @@ def smooth_timeline(
         # Captions are fixed to the frame; scene text rides on whatever is
         # carrying it. Checked here, before the boxes are canonicalised below.
         if cfg.max_motion is not None and track.motion > cfg.max_motion:
+            continue
+        # Last, because it is the only check that costs anything.
+        if track_filter is not None and not track_filter(track):
             continue
         frames = sorted(track.regions)
 

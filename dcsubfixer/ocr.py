@@ -15,6 +15,7 @@ import numpy as np
 from . import _paddle_env
 
 DEFAULT_DET_MODEL = "PP-OCRv6_medium_det"
+DEFAULT_REC_MODEL = "PP-OCRv6_medium_rec"
 
 
 @dataclass
@@ -106,3 +107,57 @@ def _extract(result) -> Tuple[List[np.ndarray], List[float]]:
             out_polys.append(arr)
             out_scores.append(float(score))
     return out_polys, out_scores
+
+
+@dataclass
+class RecognizerConfig:
+    model_name: str = DEFAULT_REC_MODEL
+    device: str = "gpu:0"
+    batch_size: int = 8
+
+
+class TextRecognizer:
+    """Reads the text in a crop, and says how sure it is.
+
+    Recognition is the one signal here that does not depend on how the footage
+    was shot: scene texture that a detector calls text reads back as gibberish
+    and scores low, whatever its angle, contrast or motion. It is skipped in
+    the main pass because running it per frame would cost more than everything
+    else combined - it is applied once per run of text instead.
+    """
+
+    def __init__(self, config: Optional[RecognizerConfig] = None) -> None:
+        self.cfg = config or RecognizerConfig()
+        _paddle_env.apply()
+        _paddle_env.isolate()
+        try:
+            from paddleocr import TextRecognition
+        except ImportError as exc:  # pragma: no cover - install-time guidance
+            raise RuntimeError("paddleocr is not installed") from exc
+        self._model = TextRecognition(
+            model_name=self.cfg.model_name, device=self.cfg.device
+        )
+
+    def read(self, crops: Sequence[np.ndarray]) -> List[Tuple[str, float]]:
+        """Recognise a batch of RGB crops, returning (text, confidence)."""
+        if not crops:
+            return []
+        bgr = [np.ascontiguousarray(c[:, :, ::-1]) for c in crops]
+        results = self._model.predict(bgr, batch_size=min(self.cfg.batch_size, len(bgr)))
+        out = []
+        for r in results:
+            text, score = "", 0.0
+            for key in ("rec_text", "text"):
+                try:
+                    text = str(r[key])
+                    break
+                except (KeyError, TypeError):
+                    continue
+            for key in ("rec_score", "score"):
+                try:
+                    score = float(r[key])
+                    break
+                except (KeyError, TypeError):
+                    continue
+            out.append((text, score))
+        return out
