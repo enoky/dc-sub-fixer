@@ -27,11 +27,40 @@ import numpy as np
 Box = Tuple[int, int, int, int]  # x0, y0, x1, y1 (exclusive on x1/y1)
 
 
+class Detection(NamedTuple):
+    """One text box from the detector, with what we know about it."""
+
+    box: Box
+    score: float = 1.0
+    tilt: float = 0.0  # degrees off horizontal, 0..90
+
+
 class Region(NamedTuple):
     """A crop to segment, plus the detections that justify it."""
 
     box: Box
     dets: Tuple[Box, ...] = ()
+    score: float = 1.0  # the best detection in it, for track-level judging
+
+
+def poly_tilt(poly: np.ndarray) -> float:
+    """How far off horizontal a detection sits, in degrees.
+
+    Taken from the quad's own text edge rather than cv2.minAreaRect, whose
+    angle convention flips between OpenCV versions and reports 90 degrees for
+    perfectly level boxes depending on which corner it calls first.
+
+    PP-OCR returns four points clockwise from the top left, so the first edge
+    runs along the text baseline.
+    """
+    p = np.asarray(poly, np.float32).reshape(-1, 2)
+    if len(p) == 4:
+        dx, dy = p[1] - p[0]
+    else:
+        edges = np.roll(p, -1, axis=0) - p
+        dx, dy = edges[int(np.argmax((edges ** 2).sum(axis=1)))]
+    angle = float(np.degrees(np.arctan2(float(dy), float(dx))))
+    return abs(((angle + 90.0) % 180.0) - 90.0)
 
 
 RegionLike = Union[Region, Box]
@@ -60,6 +89,14 @@ class RegionConfig:
     merge_gap: int = 24    # boxes closer than this get merged into one region
     min_height: int = 8    # ignore detections thinner than this many pixels
     min_area: int = 120
+    # Captions and credits are set level. Scene text - a sign, a label, a
+    # newspaper being held - almost never is, so anything appreciably off
+    # horizontal is rejected outright.
+    max_tilt: float = 4.0
+    # A track is kept when its *best* frame clears this. Judging each frame
+    # alone forces the threshold high enough to survive a caption's weakest
+    # moment, which then cuts the fades at either end of every real one.
+    track_score: float = 0.60
     roi: Optional[Tuple[float, float, float, float]] = None  # x0,y0,x1,y1 as 0..1 fractions
     # Drop text present in fewer than this many frames. On-screen text has to
     # stay up long enough to read, so a short-lived detection is nearly always
@@ -81,10 +118,37 @@ def as_region(item: RegionLike) -> Region:
 def polys_to_boxes(polys: Sequence[np.ndarray]) -> List[Box]:
     boxes = []
     for poly in polys:
-        x0, y0 = poly.min(axis=0)
-        x1, y1 = poly.max(axis=0)
+        p = np.asarray(poly, np.float32).reshape(-1, 2)
+        x0, y0 = p.min(axis=0)
+        x1, y1 = p.max(axis=0)
         boxes.append((int(np.floor(x0)), int(np.floor(y0)), int(np.ceil(x1)), int(np.ceil(y1))))
     return boxes
+
+
+def detections_from_polys(
+    polys: Sequence[np.ndarray], scores: Optional[Sequence[float]] = None
+) -> List[Detection]:
+    """Pair each detector quad with its score and its angle off horizontal."""
+    boxes = polys_to_boxes(polys)
+    if scores is None:
+        scores = [1.0] * len(boxes)
+    return [
+        Detection(box, float(score), poly_tilt(poly))
+        for box, poly, score in zip(boxes, polys, scores)
+    ]
+
+
+def filter_detections(
+    dets: Sequence[Detection], frame_size: Tuple[int, int], cfg: RegionConfig
+) -> List[Detection]:
+    """Drop detections that are too small, off-ROI, or not level."""
+    kept = []
+    for det in dets:
+        if cfg.max_tilt is not None and det.tilt > cfg.max_tilt:
+            continue
+        if filter_boxes([det.box], frame_size, cfg):
+            kept.append(det)
+    return kept
 
 
 def filter_boxes(boxes: Sequence[Box], frame_size: Tuple[int, int], cfg: RegionConfig) -> List[Box]:
@@ -152,6 +216,7 @@ def merge_regions(items: Sequence[RegionLike], gap: int) -> List[Region]:
                     out[i] = Region(
                         _union(existing.box, region.box),
                         _dedupe(existing.dets + region.dets),
+                        max(existing.score, region.score),
                     )
                     changed = True
                     break
@@ -173,13 +238,16 @@ def stabilise(box: Box, frame_size: Tuple[int, int], cfg: RegionConfig) -> Box:
 
 
 def frame_regions(
-    polys: Sequence[np.ndarray], frame_size: Tuple[int, int], cfg: RegionConfig
+    polys: Sequence[np.ndarray],
+    frame_size: Tuple[int, int],
+    cfg: RegionConfig,
+    scores: Optional[Sequence[float]] = None,
 ) -> List[Region]:
-    boxes = filter_boxes(polys_to_boxes(polys), frame_size, cfg)
-    if not boxes:
+    dets = filter_detections(detections_from_polys(polys, scores), frame_size, cfg)
+    if not dets:
         return []
-    merged = merge_regions([Region(b, (b,)) for b in boxes], cfg.merge_gap)
-    snapped = [Region(stabilise(r.box, frame_size, cfg), r.dets) for r in merged]
+    merged = merge_regions([Region(d.box, (d.box,), d.score) for d in dets], cfg.merge_gap)
+    snapped = [Region(stabilise(r.box, frame_size, cfg), r.dets, r.score) for r in merged]
     # Padding can push neighbours into overlap; fold those together again.
     return merge_regions(snapped, 0)
 
@@ -203,6 +271,11 @@ class Track:
     @property
     def span(self) -> int:
         return len(self.regions)
+
+    @property
+    def peak_score(self) -> float:
+        """The best detection confidence this track ever reached."""
+        return max((r.score for r in self.regions.values()), default=0.0)
 
 
 def build_tracks(per_frame: Sequence[List[RegionLike]], iou_thresh: float = 0.3) -> List[Track]:
@@ -253,6 +326,14 @@ def smooth_timeline(
     for track in tracks:
         if track.span < min_track:
             continue
+        # Judge the track by its best moment, not each frame on its own. A
+        # caption fades in and out, so its first and last frames score no
+        # better than scene texture; a per-frame threshold high enough to
+        # reject the texture therefore eats the fades off every real caption.
+        # Whether something is text does not change frame to frame, so the
+        # verdict is made once and every frame of the track inherits it.
+        if cfg.track_score and track.peak_score < cfg.track_score:
+            continue
         frames = sorted(track.regions)
 
         # Hold the box still while it keeps covering the same text. Snapping to
@@ -300,7 +381,11 @@ def smooth_timeline(
 
 # ---------------------------------------------------------------- serialising
 def region_to_json(region: Region) -> dict:
-    return {"box": list(region.box), "dets": [list(d) for d in region.dets]}
+    return {
+        "box": list(region.box),
+        "dets": [list(d) for d in region.dets],
+        "score": round(float(region.score), 4),
+    }
 
 
 def region_from_json(entry) -> Region:
@@ -308,7 +393,7 @@ def region_from_json(entry) -> Region:
     if isinstance(entry, dict):
         box = tuple(entry["box"])
         dets = tuple(tuple(d) for d in entry.get("dets") or ())
-        return Region(box, dets or (box,))
+        return Region(box, dets or (box,), float(entry.get("score", 1.0)))
     # A bare box from an older cache: gate to the whole region, i.e. no filtering.
     box = tuple(entry)
     return Region(box, (box,))

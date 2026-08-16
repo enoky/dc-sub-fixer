@@ -280,6 +280,114 @@ def test_composite_preserves_16_bit_precision_outside_the_mask():
     assert np.array_equal(out[untouched], depth[untouched])
 
 
+# --------------------------------------------------- tilt and track scoring
+
+
+def _quad(x0, y0, x1, y1, degrees=0.0):
+    """A detector-style quad, clockwise from the top left, rotated about centre."""
+    pts = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], np.float32)
+    c = pts.mean(axis=0)
+    a = np.radians(degrees)
+    rot = np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]], np.float32)
+    return (pts - c) @ rot.T + c
+
+
+def test_tilt_of_a_level_quad_is_zero():
+    assert regions.poly_tilt(_quad(10, 10, 200, 50)) == pytest.approx(0.0, abs=1e-3)
+
+
+def test_tilt_matches_the_rotation_applied():
+    for deg in (3.0, 12.0, 30.0):
+        assert regions.poly_tilt(_quad(10, 10, 200, 50, deg)) == pytest.approx(deg, abs=0.1)
+
+
+def test_tilt_is_symmetric_about_horizontal():
+    assert regions.poly_tilt(_quad(10, 10, 200, 50, -8.0)) == pytest.approx(8.0, abs=0.1)
+
+
+def test_tilt_of_vertical_text_is_ninety():
+    """Text turned on its side, i.e. the quad's own edge is vertical."""
+    assert regions.poly_tilt(_quad(10, 10, 200, 50, 90.0)) == pytest.approx(90.0, abs=1e-3)
+
+
+def test_tilt_reads_the_text_direction_not_the_box_shape():
+    """A tall narrow box of level text is level; only the quad order says so.
+
+    This is why the measure comes from the quad rather than its bounding box:
+    a single wide letter and a column of stacked text share a bounding box.
+    """
+    tall_but_level = _quad(10, 10, 50, 200)  # first edge runs left to right
+    assert regions.poly_tilt(tall_but_level) == pytest.approx(0.0, abs=1e-3)
+
+
+def test_tilt_never_exceeds_ninety():
+    """The measure folds to 0..90, so a near-vertical quad cannot read as small."""
+    for deg in (0, 45, 89, 91, 135, 179, 200, 271):
+        assert 0.0 <= regions.poly_tilt(_quad(10, 10, 200, 50, deg)) <= 90.0 + 1e-6
+
+
+def test_tilted_detections_are_rejected():
+    cfg = regions.RegionConfig(max_tilt=4.0)
+    polys = [_quad(100, 100, 400, 150), _quad(100, 300, 400, 350, 15.0)]
+    out = regions.frame_regions(polys, (1920, 1080), cfg, scores=[0.9, 0.9])
+    assert len(out) == 1
+    assert out[0].box[1] < 200, "the level detection should be the survivor"
+
+
+def test_tilt_filter_can_be_disabled():
+    cfg = regions.RegionConfig(max_tilt=90.0, merge_gap=0)
+    polys = [_quad(100, 100, 400, 150), _quad(100, 300, 400, 350, 15.0)]
+    assert len(regions.frame_regions(polys, (1920, 1080), cfg, scores=[0.9, 0.9])) == 2
+
+
+def test_region_score_is_the_best_of_its_detections():
+    polys = [_quad(100, 900, 200, 940), _quad(210, 900, 320, 940)]
+    out = regions.frame_regions(polys, (1920, 1080), regions.RegionConfig(),
+                                scores=[0.42, 0.88])
+    assert out[0].score == pytest.approx(0.88)
+
+
+def test_a_track_is_judged_by_its_best_frame_not_its_worst():
+    """A caption fades in, so its first frames score no better than texture."""
+    box = (400, 800, 900, 880)
+    weak = regions.Region(box, (box,), 0.35)
+    strong = regions.Region(box, (box,), 0.93)
+    timeline = [[weak], [weak], [strong], [strong], [weak], [weak]]
+    out = regions.smooth_timeline(timeline, regions.RegionConfig(min_track=2,
+                                                                track_score=0.6))
+    assert all(items for items in out), "the fade frames must survive with the peak"
+
+
+def test_a_track_that_never_scores_well_is_dropped():
+    box = (400, 800, 900, 880)
+    weak = regions.Region(box, (box,), 0.42)
+    timeline = [[weak] for _ in range(20)]
+    out = regions.smooth_timeline(timeline, regions.RegionConfig(min_track=2,
+                                                                track_score=0.6))
+    assert not any(out)
+
+
+def test_track_scoring_can_be_disabled():
+    box = (400, 800, 900, 880)
+    weak = regions.Region(box, (box,), 0.1)
+    timeline = [[weak] for _ in range(20)]
+    out = regions.smooth_timeline(timeline, regions.RegionConfig(min_track=2,
+                                                                track_score=0.0))
+    assert all(out)
+
+
+def test_two_tracks_are_judged_separately():
+    """One strong caption must not carry an unrelated weak detection with it."""
+    good = (100, 100, 400, 160)
+    bad = (1400, 600, 1700, 660)
+    timeline = [[regions.Region(good, (good,), 0.92), regions.Region(bad, (bad,), 0.33)]
+                for _ in range(12)]
+    out = regions.smooth_timeline(timeline, regions.RegionConfig(min_track=2,
+                                                                track_score=0.6))
+    kept = {r.box for items in out for r in items}
+    assert kept == {good}
+
+
 # ------------------------------------------------------ mask gating
 
 

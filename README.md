@@ -190,6 +190,29 @@ has margin: an aircraft wall panel that the detector read as text for seven
 straight frames is cut by persistence at the default, and by confidence at
 `--det-box-thresh 0.7`.
 
+**Level text, and judging a run rather than a frame.** Two more filters act
+before that. Captions and credits are set level, so anything more than
+`--max-tilt` degrees off horizontal is rejected: on the credit clip, real
+credits measure within 0.7 degrees while the scene text around them has a
+median tilt of 6 and a 90th percentile of 45. The angle comes from the
+detector's own quadrilateral, which the pipeline previously discarded on
+arrival by reducing it to an upright box.
+
+The other is about *when* confidence is judged. Per frame, credits and scene
+text genuinely overlap — on that clip the credits' 10th percentile is 0.84 and
+the worst piece of scene text reaches 0.92 — so a threshold strict enough to
+reject the scene text also eats the fade at either end of every real caption.
+Whether something is text does not change from frame to frame, so the question
+is asked once per *run*: a run is kept when its best frame clears
+`--track-score`, and all of its frames inherit that verdict. The detector's own
+floor (`--det-floor`) stays low, since a frame that is never detected cannot be
+rescued later.
+
+That recovers 174 frames of faded credit that a per-frame 0.85 threshold cut,
+while still rejecting the newspaper. It is also not a knife edge: every
+surviving run peaks above 0.85, so anything from 0.6 to 0.85 gives the same
+answer on that clip.
+
 **Scene text inside a caption's outline.** Those two filters both act on whole
 detections, and there is a third case they cannot see. A region is a rectangle
 around one or more lines, and a rectangle drawn around two lines of different
@@ -237,8 +260,10 @@ python -m dcsubfixer rgb.mp4 depth.mp4 out.mp4 --heal --mask-low 0.45 --mask-hig
 
 | symptom | try |
 | --- | --- |
-| text missed entirely | lower `--det-box-thresh`, raise `--det-limit-side-len` |
-| non-text picked up (panels, textures, faces) | raise `--det-box-thresh` toward 0.8, raise `--min-track`, or `--roi 0,0.7,1,1` for subtitles only |
+| text missed entirely | lower `--track-score`, then `--det-floor`; raise `--det-limit-side-len` |
+| a caption's fade in/out is dropped | lower `--det-floor` — `--track-score` cannot rescue what was never detected |
+| slanted or stylised titles rejected | raise `--max-tilt`, or 90 to disable |
+| non-text picked up (panels, textures, faces) | raise `--track-score`, tighten `--max-tilt`, raise `--min-track`, or `--roi 0,0.7,1,1` for subtitles only |
 | scene text appearing beside a caption | already filtered; if some survives, raise `--gate-min-inside` or lower `--gate-dilate` |
 | glyph edges or descenders clipped | raise `--gate-dilate`, or `--no-gate` |
 | glyphs still look soft | `--heal`, and narrow the window to `--mask-low 0.45 --mask-high 0.6` |

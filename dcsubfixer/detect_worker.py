@@ -48,8 +48,8 @@ def detect(request: dict, progress: bool = False) -> dict:
         nonlocal last
         if not batch:
             return
-        for idx, polys in zip(batch_idx, detector.detect_batch(batch)):
-            found = regions.frame_regions(polys, frame_size, reg_cfg)
+        for idx, (polys, scores) in zip(batch_idx, detector.detect_batch(batch)):
+            found = regions.frame_regions(polys, frame_size, reg_cfg, scores)
             while len(per_frame) < idx:
                 per_frame.append(list(last))  # frames skipped by --ocr-stride
             per_frame.append(found)

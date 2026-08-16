@@ -90,10 +90,18 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--det-limit-side-len", type=int, default=1280,
                    help="frames are scaled so the long side is at most this before detection")
     g.add_argument("--det-thresh", type=float, default=0.3)
-    g.add_argument("--det-box-thresh", type=float, default=0.6,
-                   help="minimum detection confidence. Worth raising: a missed caption "
-                        "just leaves the depth as DepthCrafter made it, whereas a false "
-                        "positive paints over a region that was fine")
+    g.add_argument("--det-floor", type=float, default=0.3,
+                   help="confidence below which the detector discards a box outright. "
+                        "Kept low on purpose: weak frames of a real caption are rescued "
+                        "by --track-score, which cannot see what was never detected")
+    g.add_argument("--track-score", type=float, default=0.60,
+                   help="a run of text is kept when its *best* frame reaches this. "
+                        "Judging frames individually forces the bar high enough to "
+                        "survive a caption's weakest moment, which then cuts the fades "
+                        "off every real one")
+    g.add_argument("--max-tilt", type=float, default=4.0,
+                   help="reject detections more than this many degrees off horizontal. "
+                        "Captions are set level; scene text rarely is")
     g.add_argument("--det-unclip-ratio", type=float, default=1.8)
     g.add_argument("--det-batch-size", type=int, default=8)
     g.add_argument("--ocr-stride", type=int, default=1,
@@ -194,7 +202,7 @@ def config_from_args(args: argparse.Namespace) -> pipeline.PipelineConfig:
             device="gpu:0" if args.device.startswith("cuda") else "cpu",
             limit_side_len=args.det_limit_side_len,
             thresh=args.det_thresh,
-            box_thresh=args.det_box_thresh,
+            box_thresh=args.det_floor,
             unclip_ratio=args.det_unclip_ratio,
             batch_size=args.det_batch_size,
         ),
@@ -203,6 +211,8 @@ def config_from_args(args: argparse.Namespace) -> pipeline.PipelineConfig:
             grid=args.grid,
             merge_gap=args.merge_gap,
             min_height=args.min_height,
+            max_tilt=args.max_tilt,
+            track_score=args.track_score,
             roi=args.roi,
             min_track=args.min_track,
             max_gap=args.max_gap,

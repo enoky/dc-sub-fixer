@@ -8,7 +8,7 @@ removes most of the OCR cost.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -24,7 +24,7 @@ class DetectorConfig:
     limit_side_len: int = 1280
     limit_type: str = "max"
     thresh: float = 0.3
-    box_thresh: float = 0.5
+    box_thresh: float = 0.3  # detection floor; the real bar is applied per track
     unclip_ratio: float = 1.8
     batch_size: int = 8
 
@@ -55,21 +55,25 @@ class TextDetector:
             unclip_ratio=self.cfg.unclip_ratio,
         )
 
-    def detect_batch(self, frames: Sequence[np.ndarray]) -> List[List[np.ndarray]]:
+    def detect_batch(
+        self, frames: Sequence[np.ndarray]
+    ) -> List[Tuple[List[np.ndarray], List[float]]]:
         """Detect text quads in a batch of RGB frames.
 
-        Returns, per frame, a list of 4x2 float arrays in (x, y) pixel
-        coordinates of that frame.
+        Returns, per frame, the 4x2 float quads in that frame's pixel
+        coordinates and their confidences. The quads are kept rather than
+        reduced to boxes here because their orientation is a useful signal:
+        captions are level, scene text usually is not.
         """
         if not frames:
             return []
         # PaddleOCR expects BGR, matching OpenCV's convention.
         bgr = [np.ascontiguousarray(f[:, :, ::-1]) for f in frames]
         results = self._model.predict(bgr, batch_size=min(self.cfg.batch_size, len(bgr)))
-        return [_extract_polys(r) for r in results]
+        return [_extract(r) for r in results]
 
 
-def _extract_polys(result) -> List[np.ndarray]:
+def _extract(result) -> Tuple[List[np.ndarray], List[float]]:
     polys = None
     if isinstance(result, dict):
         for key in ("dt_polys", "polys", "boxes"):
@@ -84,10 +88,21 @@ def _extract_polys(result) -> List[np.ndarray]:
             except (KeyError, TypeError):
                 continue
     if polys is None:
-        return []
-    out = []
-    for poly in polys:
+        return [], []
+    scores = None
+    for key in ("dt_scores", "scores"):
+        try:
+            scores = result[key]
+            break
+        except (KeyError, TypeError):
+            continue
+    if scores is None or len(scores) != len(polys):
+        scores = [1.0] * len(polys)
+
+    out_polys, out_scores = [], []
+    for poly, score in zip(polys, scores):
         arr = np.asarray(poly, dtype=np.float32).reshape(-1, 2)
         if arr.shape[0] >= 3:
-            out.append(arr)
-    return out
+            out_polys.append(arr)
+            out_scores.append(float(score))
+    return out_polys, out_scores

@@ -472,7 +472,7 @@ class MainWindow(QMainWindow):
         self.cmb_align = QComboBox()
         self.cmb_align.addItems(["auto", "stretch", "fit", "fill"])
         self.cmb_align.currentTextChanged.connect(self._align_changed)
-        dl.addRow("confidence", self.spin_box_thresh)
+        dl.addRow("track conf.", self.spin_box_thresh)
         dl.addRow("min frames", self.spin_min_track)
         dl.addRow("alignment", self.cmb_align)
         self.btn_detect = QPushButton("Run detection")
@@ -717,7 +717,10 @@ class MainWindow(QMainWindow):
             return
         s = self.session
         s.region = self._region_config()
-        det = ocr.DetectorConfig(box_thresh=self.spin_box_thresh.value())
+        # The spin box is the *track* bar; the detector keeps its low floor so
+        # weak frames of a real caption still reach the tracker.
+        s.region.track_score = self.spin_box_thresh.value()
+        det = ocr.DetectorConfig()
         request = {
             "rgb_path": os.path.abspath(self.rgb_path),
             "detector": asdict(det),
@@ -793,7 +796,7 @@ class MainWindow(QMainWindow):
         cmd = [sys.executable, "-m", "dcsubfixer", self.rgb_path, self.depth_path, out_path,
                "--mask-low", f"{cfg.mask_low:.2f}", "--mask-high", f"{cfg.mask_high:.2f}",
                "--quality", self.cmb_quality.currentText(),
-               "--det-box-thresh", f"{self.spin_box_thresh.value():.2f}",
+               "--track-score", f"{self.spin_box_thresh.value():.2f}",
                "--align", self.cmb_align.currentText()]
         if cfg.heal:
             cmd += ["--heal", "--heal-radius", str(cfg.heal_radius)]
