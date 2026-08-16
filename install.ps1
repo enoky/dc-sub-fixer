@@ -207,37 +207,102 @@ if (Test-Path (Join-Path $HiSamDir "hi_sam")) {
 }
 
 # ------------------------------------------------------------------- models
-Step "Model checkpoints"
-if (-not (Test-Path $ModelsDir)) { New-Item -ItemType Directory -Path $ModelsDir | Out-Null }
+function Get-DriveUri {
+    <#
+        Google Drive will not hand over a large file from a /uc share link: it
+        answers with an HTML "can't scan this for viruses" page instead, which
+        saves happily as a .pth and only fails later, at load time, looking
+        like a corrupt checkpoint. The usercontent endpoint with confirm=t
+        returns the bytes directly.
+    #>
+    param([string]$FileId)
+    return "https://drive.usercontent.google.com/download?id=$FileId&export=download&confirm=t"
+}
 
-$samPath = Join-Path $ModelsDir "sam_vit_l_0b3195.pth"
-if (Test-Path $samPath) {
-    Ok "sam_vit_l_0b3195.pth present"
-} elseif ($SkipModels) {
-    Warn "sam_vit_l_0b3195.pth missing (-SkipModels was given)"
-} else {
-    Info "downloading the base SAM ViT-L backbone (1.2 GB) from dl.fbaipublicfiles.com"
+function Save-Checkpoint {
+    <#
+        Download to a .part file and only put it in place once the size and
+        hash check out. A truncated download left under the real name would be
+        reported as "present" by the next run and then fail somewhere far less
+        obvious.
+    #>
+    param(
+        [string]$Uri,
+        [string]$Destination,
+        [long]$ExpectedSize,
+        [string]$ExpectedSha256,
+        [string]$Label
+    )
+    $part = "$Destination.part"
+    if (Test-Path $part) { Remove-Item $part -Force }
+    Info "downloading $Label ($([math]::Round($ExpectedSize / 1MB)) MB)"
     try {
         $old = $ProgressPreference
         $ProgressPreference = "SilentlyContinue"
-        Invoke-WebRequest -Uri "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth" `
-            -OutFile $samPath -UseBasicParsing
+        Invoke-WebRequest -Uri $Uri -OutFile $part -UseBasicParsing -TimeoutSec 1800
         $ProgressPreference = $old
-        Ok "downloaded sam_vit_l_0b3195.pth"
     } catch {
-        if (Test-Path $samPath) { Remove-Item $samPath -Force }
-        Warn "could not download the SAM checkpoint: $_"
+        if (Test-Path $part) { Remove-Item $part -Force }
+        Warn "could not download $Label`: $($_.Exception.Message)"
+        return $false
     }
+
+    $size = (Get-Item $part).Length
+    if ($size -ne $ExpectedSize) {
+        Remove-Item $part -Force
+        # A few KB means the host served an interstitial or an error page.
+        Warn "$Label is $size bytes, expected $ExpectedSize - the download was intercepted or truncated"
+        return $false
+    }
+    $hash = (Get-FileHash $part -Algorithm SHA256).Hash
+    if ($hash -ne $ExpectedSha256) {
+        Remove-Item $part -Force
+        Warn "$Label failed its checksum (got $hash) - the mirror is serving something else"
+        return $false
+    }
+    Move-Item $part $Destination -Force
+    Ok "downloaded and verified $Label"
+    return $true
 }
 
-# Hi-SAM's own weights are not on a direct link, so they stay a manual step.
-$tss = Get-ChildItem -Path $ModelsDir -Filter "sam_tss_l*.pth" -ErrorAction SilentlyContinue
-if ($tss) {
-    Ok "$($tss[0].Name) present"
-} else {
-    Warn "sam_tss_l_textseg.pth is missing. Download it from the Hi-SAM README"
-    Info "    https://github.com/ymy-k/Hi-SAM#news  ->  SAM-TSS (ViT-L, TextSeg)"
-    Info "    and save it into: $ModelsDir"
+Step "Model checkpoints"
+if (-not (Test-Path $ModelsDir)) { New-Item -ItemType Directory -Path $ModelsDir | Out-Null }
+
+$checkpoints = @(
+    @{
+        Name = "sam_vit_l_0b3195.pth"
+        Label = "base SAM ViT-L backbone"
+        Uri = "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth"
+        Size = 1249524607L
+        Sha256 = "3ADCC4315B642A4D2101128F611684E8734C41232A17C648ED1693702A49A622"
+        Manual = "https://github.com/facebookresearch/segment-anything#model-checkpoints"
+    },
+    @{
+        Name = "sam_tss_l_textseg.pth"
+        Label = "Hi-SAM text stroke segmentation (ViT-L, TextSeg)"
+        Uri = (Get-DriveUri "1vEWn3fmlFnVPRyFyPWhRhp_1Upzd3eaM")
+        Size = 122756163L
+        Sha256 = "1A7399FD5B031383A3776B4375332D23B952BE616A735B545B3ABB7EB89D063F"
+        Manual = "https://github.com/ymy-k/Hi-SAM"
+    }
+)
+
+foreach ($ck in $checkpoints) {
+    $path = Join-Path $ModelsDir $ck.Name
+    if (Test-Path $path) {
+        Ok "$($ck.Name) present"
+        continue
+    }
+    if ($SkipModels) {
+        Warn "$($ck.Name) missing (-SkipModels was given)"
+        continue
+    }
+    $got = Save-Checkpoint -Uri $ck.Uri -Destination $path -ExpectedSize $ck.Size `
+        -ExpectedSha256 $ck.Sha256 -Label $ck.Label
+    if (-not $got) {
+        Info "    fetch it manually from $($ck.Manual)"
+        Info "    and save it into: $ModelsDir"
+    }
 }
 
 # ------------------------------------------------------------------- verify
