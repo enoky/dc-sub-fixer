@@ -93,6 +93,12 @@ class RegionConfig:
     # newspaper being held - almost never is, so anything appreciably off
     # horizontal is rejected outright.
     max_tilt: float = 4.0
+    # Reject a run whose box moves more than this fraction of its own text
+    # height between frames, typically. Captions are pinned to the frame;
+    # scene text moves with whatever carries it. Slow movement reads as zero
+    # because boxes are grid-snapped first, so a scrolling credit roll still
+    # passes - raise this or set it to None if a fast roll is being cut.
+    max_motion: Optional[float] = 0.02
     # A track is kept when its *best* frame clears this. Judging each frame
     # alone forces the threshold high enough to survive a caption's weakest
     # moment, which then cuts the fades at either end of every real one.
@@ -277,6 +283,39 @@ class Track:
         """The best detection confidence this track ever reached."""
         return max((r.score for r in self.regions.values()), default=0.0)
 
+    @property
+    def motion(self) -> float:
+        """Typical movement between frames, as a fraction of the text height.
+
+        The *median* step, not the total travel. A caption that never moves
+        still shows a large total spread now and then, because the detector
+        occasionally merges a neighbouring line and jumps the box for a frame
+        or two; on the credit clip that put stationary credits at up to 2.0
+        text heights of spread, overlapping the scene text completely. The
+        median ignores those isolated jumps and reads 0.000 for every real
+        credit there, against 0.037 and up for everything handheld.
+
+        Must be read before smooth_timeline canonicalises a run's boxes to
+        their union, which erases the very movement being measured.
+        """
+        frames = sorted(self.regions)
+        if len(frames) < 2:
+            return 0.0
+        boxes = np.array([self.regions[f].box for f in frames], dtype=float)
+        height = float(np.median(boxes[:, 3] - boxes[:, 1]))
+        if height <= 0:
+            return 0.0
+
+        # Take the part of the change that both edges share, which is the
+        # translation; a box that only grows or shrinks contributes nothing.
+        # Measuring the centre instead would call a still caption mobile
+        # whenever its box flickers by one grid step, since that shifts the
+        # centre by half a step - and at typical caption sizes that lands
+        # squarely in the range real scene text occupies.
+        dx = np.minimum(np.abs(np.diff(boxes[:, 0])), np.abs(np.diff(boxes[:, 2])))
+        dy = np.minimum(np.abs(np.diff(boxes[:, 1])), np.abs(np.diff(boxes[:, 3])))
+        return float(np.median(np.hypot(dx, dy)) / height)
+
 
 def build_tracks(per_frame: Sequence[List[RegionLike]], iou_thresh: float = 0.3) -> List[Track]:
     """Link regions across frames into tracks by box overlap."""
@@ -333,6 +372,10 @@ def smooth_timeline(
         # Whether something is text does not change frame to frame, so the
         # verdict is made once and every frame of the track inherits it.
         if cfg.track_score and track.peak_score < cfg.track_score:
+            continue
+        # Captions are fixed to the frame; scene text rides on whatever is
+        # carrying it. Checked here, before the boxes are canonicalised below.
+        if cfg.max_motion is not None and track.motion > cfg.max_motion:
             continue
         frames = sorted(track.regions)
 

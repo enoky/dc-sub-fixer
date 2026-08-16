@@ -99,6 +99,11 @@ def build_parser() -> argparse.ArgumentParser:
                         "Judging frames individually forces the bar high enough to "
                         "survive a caption's weakest moment, which then cuts the fades "
                         "off every real one")
+    g.add_argument("--max-motion", type=float, default=0.02,
+                   help="reject a run whose box typically moves more than this "
+                        "fraction of its own text height per frame. Captions are "
+                        "pinned to the frame; scene text is not. Raise it if a fast "
+                        "credit roll is being cut")
     g.add_argument("--max-tilt", type=float, default=4.0,
                    help="reject detections more than this many degrees off horizontal. "
                         "Captions are set level; scene text rarely is")
@@ -212,6 +217,7 @@ def config_from_args(args: argparse.Namespace) -> pipeline.PipelineConfig:
             merge_gap=args.merge_gap,
             min_height=args.min_height,
             max_tilt=args.max_tilt,
+            max_motion=args.max_motion,
             track_score=args.track_score,
             roi=args.roi,
             min_track=args.min_track,

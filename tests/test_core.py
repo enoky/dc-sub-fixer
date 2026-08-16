@@ -153,9 +153,10 @@ def test_slowly_scrolling_text_is_tracked_but_not_frozen():
     # 40px a frame on a 300px-wide box: overlapping enough to stay one track,
     # too much movement to be treated as the same still box.
     timeline = [[(40 * i, 100, 300 + 40 * i, 140)] for i in range(5)]
-    out = regions.smooth_timeline(timeline, regions.RegionConfig(min_track=2))
+    out = regions.smooth_timeline(
+        timeline, regions.RegionConfig(min_track=2, max_motion=None))
     assert all(boxes for boxes in out), "scrolling text should not be dropped"
-    produced = {tuple(b) for boxes in out for b in boxes}
+    produced = {r.box for items in out for r in items}
     assert len(produced) > 1, "a moving box must not be frozen to one position"
 
 
@@ -386,6 +387,92 @@ def test_two_tracks_are_judged_separately():
                                                                 track_score=0.6))
     kept = {r.box for items in out for r in items}
     assert kept == {good}
+
+
+def _moving_timeline(step, n=20, box=(400, 300, 800, 380), score=0.95):
+    """A track whose box shifts by `step` pixels each frame."""
+    out = []
+    for i in range(n):
+        b = (box[0] + i * step, box[1], box[2] + i * step, box[3])
+        out.append([regions.Region(b, (b,), score)])
+    return out
+
+
+def test_a_stationary_caption_has_no_motion():
+    tracks = regions.build_tracks(_moving_timeline(0))
+    assert tracks[0].motion == pytest.approx(0.0)
+
+
+def test_motion_is_measured_against_the_text_height():
+    """Same pixel speed, taller text, lower relative motion."""
+    short = regions.build_tracks(_moving_timeline(8, box=(400, 300, 800, 340)))[0]
+    tall = regions.build_tracks(_moving_timeline(8, box=(400, 300, 800, 420)))[0]
+    assert short.motion > tall.motion
+
+
+def test_a_box_that_only_changes_size_is_not_moving():
+    """A still caption whose box flickers one grid step taller.
+
+    Its centre moves half a step, which at caption sizes reads the same as
+    real scene text; its edges do not both move, so translation reads zero.
+    """
+    a, b = (400, 896, 1152, 992), (400, 896, 1152, 1008)
+    timeline = [[regions.Region(a, (a,), 0.95)], [regions.Region(b, (b,), 0.95)]] * 6
+    track = max(regions.build_tracks(timeline), key=lambda t: t.span)
+    assert track.motion == pytest.approx(0.0)
+
+
+def test_a_scroll_slower_than_the_grid_reads_as_still():
+    """Why a credit roll survives: boxes are grid-snapped before this runs.
+
+    A couple of pixels a frame lands in the same grid cell most frames, so the
+    median step is zero even though the text is drifting.
+    """
+    grid, speed = 16, 2
+    timeline = []
+    for i in range(24):
+        y = 300 + (i * speed // grid) * grid
+        box = (400, y, 800, y + 80)
+        timeline.append([regions.Region(box, (box,), 0.95)])
+    track = max(regions.build_tracks(timeline), key=lambda t: t.span)
+    assert track.motion == pytest.approx(0.0)
+    assert any(regions.smooth_timeline(
+        timeline, regions.RegionConfig(min_track=2, max_motion=0.02)))
+
+
+def test_motion_ignores_an_isolated_jump():
+    """The reason it is a median: a stray merge moves the box for one frame.
+
+    Total travel would call this caption mobile; it is not.
+    """
+    box = (400, 300, 800, 380)
+    far = (400, 700, 800, 780)
+    timeline = [[regions.Region(box, (box,), 0.95)] for _ in range(12)]
+    timeline[6] = [regions.Region(far, (far,), 0.95)]
+    track = max(regions.build_tracks(timeline), key=lambda t: t.span)
+    assert track.motion == pytest.approx(0.0)
+
+
+def test_moving_text_is_dropped_and_stationary_text_is_kept():
+    cfg = regions.RegionConfig(min_track=2, max_motion=0.02)
+    assert not any(regions.smooth_timeline(_moving_timeline(12), cfg))
+    assert all(regions.smooth_timeline(_moving_timeline(0), cfg))
+
+
+def test_motion_filter_can_be_disabled():
+    cfg = regions.RegionConfig(min_track=2, max_motion=None)
+    assert any(regions.smooth_timeline(_moving_timeline(12), cfg))
+
+
+def test_motion_is_read_before_boxes_are_canonicalised():
+    """smooth_timeline replaces a run's boxes with their union.
+
+    If motion were measured after that, every track would look stationary and
+    the filter would never fire.
+    """
+    cfg = regions.RegionConfig(min_track=2, max_motion=0.02, sticky_iou=0.0)
+    # sticky_iou 0 forces every frame into one run, i.e. maximum flattening.
+    assert not any(regions.smooth_timeline(_moving_timeline(12), cfg))
 
 
 # ------------------------------------------------------ mask gating

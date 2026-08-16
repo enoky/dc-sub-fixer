@@ -213,6 +213,26 @@ while still rejecting the newspaper. It is also not a knife edge: every
 surviving run peaks above 0.85, so anything from 0.6 to 0.85 gives the same
 answer on that clip.
 
+**Text that moves.** A caption is pinned to the frame; scene text rides on
+whatever is carrying it. Each run's typical movement between frames, in units
+of its own text height, is measured before the boxes are canonicalised — the
+step that would otherwise flatten a run to one box and erase the evidence.
+
+Two details matter. It is the *median* step, not the total travel: a still
+caption's box jumps for a frame or two whenever the detector merges a
+neighbouring line, which on the credit clip put stationary credits at up to 2.0
+text heights of total spread, overlapping the scene text completely. And it
+measures translation — the part of the change both edges share — rather than
+the centre, because a still caption whose box flickers one grid step taller
+moves its centre by half a step, which at caption sizes is indistinguishable
+from real movement.
+
+Measured that way, every credit on the clip reads exactly 0.000 and every piece
+of handheld text 0.037 or more. A scrolling credit roll still passes: boxes are
+grid-snapped first, so a drift of a few pixels a frame stays in the same cell
+most frames and the median step is zero. Raise `--max-motion` if a fast roll is
+being cut.
+
 **Scene text inside a caption's outline.** Those two filters both act on whole
 detections, and there is a third case they cannot see. A region is a rectangle
 around one or more lines, and a rectangle drawn around two lines of different
@@ -263,7 +283,8 @@ python -m dcsubfixer rgb.mp4 depth.mp4 out.mp4 --heal --mask-low 0.45 --mask-hig
 | text missed entirely | lower `--track-score`, then `--det-floor`; raise `--det-limit-side-len` |
 | a caption's fade in/out is dropped | lower `--det-floor` — `--track-score` cannot rescue what was never detected |
 | slanted or stylised titles rejected | raise `--max-tilt`, or 90 to disable |
-| non-text picked up (panels, textures, faces) | raise `--track-score`, tighten `--max-tilt`, raise `--min-track`, or `--roi 0,0.7,1,1` for subtitles only |
+| non-text picked up (panels, textures, faces) | raise `--track-score`, tighten `--max-tilt` or `--max-motion`, raise `--min-track`, or `--roi 0,0.7,1,1` |
+| a fast credit roll is dropped | raise `--max-motion` |
 | scene text appearing beside a caption | already filtered; if some survives, raise `--gate-min-inside` or lower `--gate-dilate` |
 | glyph edges or descenders clipped | raise `--gate-dilate`, or `--no-gate` |
 | glyphs still look soft | `--heal`, and narrow the window to `--mask-low 0.45 --mask-high 0.6` |
