@@ -24,8 +24,8 @@ class CompositeConfig:
     binary: bool = False       # hard-threshold the mask instead of feathering
     # Thicken (>0) or thin (<0) the glyphs, in depth-space pixels. Fractional:
     # a whole pixel here is two in the source, which is a lot on thin text.
-    dilate: float = 0.0
-    feather: float = 0.0       # gaussian sigma applied to the alpha edges
+    dilate: float = 0.70
+    feather: float = 0.70      # gaussian sigma applied to the alpha edges
     heal: bool = False         # inpaint DepthCrafter's jagged halo before compositing
     heal_radius: int = 6
     opacity: float = 1.0

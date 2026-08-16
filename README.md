@@ -233,6 +233,17 @@ grid-snapped first, so a drift of a few pixels a frame stays in the same cell
 most frames and the median step is zero. Raise `--max-motion` if a fast roll is
 being cut.
 
+**Glyph weight and edge.** `--dilate` thickens or thins the glyphs and
+`--feather` softens their edge; both default to 0.70, chosen by eye on real
+footage. Dilation is in depth-space pixels and is fractional on purpose:
+morphology comes in whole pixels, one of those is two in the source, and on
+thin text that is the difference between a hairline and a slab.
+
+Feather is not the same knob as the `--mask-low`/`--mask-high` window. That
+window reshapes how stroke *probability* becomes coverage, and does nothing at
+all once `--binary` has thrown the soft values away; feather is a spatial blur,
+so it softens the boundary whatever produced it.
+
 **Reading the text back.** The filters above all infer text from how it looks
 or behaves. The last one simply reads it: PP-OCRv6's recogniser runs on each
 surviving run and it is kept only if the result is real text. On the credit clip
@@ -310,8 +321,8 @@ python -m dcsubfixer rgb.mp4 depth.mp4 out.mp4 --heal --mask-low 0.45 --mask-hig
 | glyph edges or descenders clipped | raise `--gate-dilate`, or `--no-gate` |
 | glyphs still look soft | `--heal`, and narrow the window to `--mask-low 0.45 --mask-high 0.6` |
 | smeared halo remains around the text | `--heal`, raise `--heal-radius` |
-| glyphs too thin or too fat | `--dilate 0.2` / `--dilate -0.2`. It is in *depth* pixels, so a whole one is two in the source — on the demo credit `--dilate 1` merges the letters into blobs. Useful travel is roughly 0 to 0.6 |
-| glyph edges too crisp against the depth | `--feather 0.8`; a spatial blur, so unlike the mask window it works on `--binary` too |
+| glyphs too thin or too fat | adjust `--dilate` (default 0.70). It is in *depth* pixels, so a whole one is two in the source; past about 1.0 the letters start to merge |
+| glyph edges too crisp, or too soft | adjust `--feather` (default 0.70). A spatial blur, so unlike the mask window it works on `--binary` too |
 | edges aliased or crawling | widen `--mask-low` / `--mask-high` |
 | text flickers on and off | raise `--max-gap`, lower `--min-track` |
 | short or fast-moving text dropped | `--min-track 1` |

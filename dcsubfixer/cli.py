@@ -157,11 +157,11 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--mask-high", type=float, default=0.65,
                    help="stroke probability mapped to fully opaque")
     g.add_argument("--binary", action="store_true", help="hard-edged mask instead of feathered")
-    g.add_argument("--dilate", type=float, default=0.0,
+    g.add_argument("--dilate", type=float, default=0.70,
                    help="thicken glyphs by N depth-space pixels, or thin them with a "
                         "negative value. Fractional: a whole pixel here is two in the "
                         "source, which is a lot on thin text")
-    g.add_argument("--feather", type=float, default=0.0,
+    g.add_argument("--feather", type=float, default=0.70,
                    help="gaussian sigma softening the glyph edges, in depth-space "
                         "pixels. Unlike the mask window this is a spatial blur, so it "
                         "works on a --binary mask too")

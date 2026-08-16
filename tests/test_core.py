@@ -211,12 +211,23 @@ def test_frame_regions_merges_words_into_one_line():
 
 
 def test_alpha_window_maps_probabilities_to_a_soft_edge():
-    cfg = comp.CompositeConfig(mask_low=0.35, mask_high=0.65)
+    cfg = _plain(mask_low=0.35, mask_high=0.65)
     prob = np.array([[0.0, 0.35, 0.5, 0.65, 1.0]], np.float32)
     alpha = comp.probability_to_alpha(prob, cfg)
     assert alpha[0, 0] == 0.0
     assert alpha[0, 2] == pytest.approx(0.5)
     assert alpha[0, 4] == 1.0
+
+
+def _plain(**kw):
+    """A config with the shaping defaults off.
+
+    dilate and feather now default to 0.70, which is what the depth map wants
+    but not what a test of some other behaviour wants: both spread the mask,
+    so a test asserting exactly which pixels changed has to switch them off to
+    be asserting anything.
+    """
+    return comp.CompositeConfig(**{"dilate": 0.0, "feather": 0.0, **kw})
 
 
 def _glyph_alpha(width=3):
@@ -256,9 +267,20 @@ def test_negative_dilate_thins():
 
 def test_dilate_zero_changes_nothing():
     prob = _glyph_alpha()
-    a = comp.probability_to_alpha(prob, comp.CompositeConfig(dilate=0.0))
-    b = comp.probability_to_alpha(prob, comp.CompositeConfig())
+    a = comp.probability_to_alpha(prob, _plain(dilate=0.0))
+    b = comp.probability_to_alpha(prob, _plain())
     assert np.array_equal(a, b)
+
+
+def test_the_shipped_defaults_thicken_and_soften():
+    """0.70/0.70, chosen on real footage: a mild spread with a graded edge."""
+    prob = _glyph_alpha(width=4)
+    shipped = comp.probability_to_alpha(prob, comp.CompositeConfig())
+    bare = comp.probability_to_alpha(prob, _plain())
+    assert shipped.sum() > bare.sum(), "the default should thicken"
+    graded = ((shipped > 0.02) & (shipped < 0.98)).sum()
+    assert graded > ((bare > 0.02) & (bare < 0.98)).sum(), "and soften"
+    assert shipped.max() == pytest.approx(1.0, abs=0.02), "cores stay solid"
 
 
 def test_feather_softens_the_edge_without_moving_it():
@@ -290,7 +312,7 @@ def test_alpha_stays_in_range_with_everything_on():
 
 
 def test_binary_mode_is_hard_edged():
-    cfg = comp.CompositeConfig(binary=True, mask_high=0.65)
+    cfg = _plain(binary=True, mask_high=0.65)
     prob = np.array([[0.5, 0.9]], np.float32)
     assert list(comp.probability_to_alpha(prob, cfg)[0]) == [0.0, 1.0]
 
@@ -333,7 +355,7 @@ def test_composite_paints_only_inside_the_mask():
     depth = np.full((40, 120), 100 * 257, np.uint16)
     prob = np.zeros((40, 120), np.float32)
     prob[10:14, 30:60] = 1.0
-    out = comp.composite_frame(depth, prob, comp.CompositeConfig(text_value="255"))
+    out = comp.composite_frame(depth, prob, _plain(text_value="255"))
     assert (out[10:14, 30:60] == 65535).all()
     assert (out[0:5] == 100 * 257).all()
 
@@ -344,7 +366,7 @@ def test_composite_preserves_16_bit_precision_outside_the_mask():
     depth = rng.randint(0, 65535, (40, 120), dtype=np.uint16)
     prob = np.zeros((40, 120), np.float32)
     prob[10:14, 30:60] = 1.0
-    out = comp.composite_frame(depth, prob, comp.CompositeConfig(text_value="255"))
+    out = comp.composite_frame(depth, prob, _plain(text_value="255"))
     assert out.dtype == np.uint16
     untouched = np.ones((40, 120), bool)
     untouched[10:14, 30:60] = False
