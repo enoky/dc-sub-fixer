@@ -42,6 +42,7 @@ class Region(NamedTuple):
     box: Box
     dets: Tuple[Box, ...] = ()
     score: float = 1.0  # the best detection in it, for track-level judging
+    run: int = -1       # which surviving run of text this belongs to
 
 
 def poly_tilt(poly: np.ndarray) -> float:
@@ -229,6 +230,8 @@ def merge_regions(items: Sequence[RegionLike], gap: int) -> List[Region]:
                         _union(existing.box, region.box),
                         _dedupe(existing.dets + region.dets),
                         max(existing.score, region.score),
+                        min(r for r in (existing.run, region.run) if r >= 0)
+                        if max(existing.run, region.run) >= 0 else -1,
                     )
                     changed = True
                     break
@@ -375,6 +378,7 @@ def smooth_timeline(
     out: List[List[Region]] = [[] for _ in per_frame]
     n = len(per_frame)
 
+    kept: List[Track] = []
     for track in tracks:
         if track.span < min_track:
             continue
@@ -393,6 +397,11 @@ def smooth_timeline(
         # Last, because it is the only check that costs anything.
         if track_filter is not None and not track_filter(track):
             continue
+        kept.append(track)
+
+    # Number the survivors. The id is written into the timeline and is what a
+    # manual exclusion refers to, so it has to mean the same thing on reload.
+    for run_id, track in enumerate(kept):
         frames = sorted(track.regions)
 
         # Hold the box still while it keeps covering the same text. Snapping to
@@ -420,7 +429,8 @@ def smooth_timeline(
         for run in runs:
             canonical = _run_union(track, run)
             for f in run:
-                track.regions[f] = Region(canonical, track.regions[f].dets)
+                prev = track.regions[f]
+                track.regions[f] = Region(canonical, prev.dets, prev.score, run_id)
 
         filled = dict(track.regions)
         for a, b in zip(frames, frames[1:]):
@@ -444,6 +454,7 @@ def region_to_json(region: Region) -> dict:
         "box": list(region.box),
         "dets": [list(d) for d in region.dets],
         "score": round(float(region.score), 4),
+        "run": int(region.run),
     }
 
 
@@ -452,7 +463,8 @@ def region_from_json(entry) -> Region:
     if isinstance(entry, dict):
         box = tuple(entry["box"])
         dets = tuple(tuple(d) for d in entry.get("dets") or ())
-        return Region(box, dets or (box,), float(entry.get("score", 1.0)))
+        return Region(box, dets or (box,), float(entry.get("score", 1.0)),
+                      int(entry.get("run", -1)))
     # A bare box from an older cache: gate to the whole region, i.e. no filtering.
     box = tuple(entry)
     return Region(box, (box,))

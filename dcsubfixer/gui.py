@@ -220,6 +220,7 @@ class TimelineStrip(QWidget):
         self.setFixedHeight(34)
         self.n_frames = 0
         self.runs: List[Tuple[int, int]] = []
+        self.excluded_runs: List[Tuple[int, int]] = []
         self.cached: set = set()
         self.current = 0
 
@@ -242,6 +243,11 @@ class TimelineStrip(QWidget):
         for a, b in self.runs:
             x0, x1 = self._x(a), self._x(b)
             p.fillRect(QRectF(x0, 6, max(x1 - x0, 1.5), h - 18), QColor(72, 132, 200))
+        # Rejected runs stay visible, so it is obvious what was removed and
+        # where, rather than the bar simply disappearing.
+        for a, b in self.excluded_runs:
+            x0, x1 = self._x(a), self._x(b)
+            p.fillRect(QRectF(x0, 6, max(x1 - x0, 1.5), h - 18), QColor(120, 60, 60))
         for f in self.cached:
             p.fillRect(QRectF(self._x(f), h - 10, 1.5, 5), QColor(120, 200, 120))
         p.setPen(QPen(QColor(240, 220, 120), 2))
@@ -418,6 +424,18 @@ class MainWindow(QMainWindow):
         self.btn_next_text = QPushButton("next text (N)")
         self.btn_next_text.clicked.connect(self._next_text_run)
         transport.addWidget(self.btn_next_text)
+        self.cmb_run = QComboBox()
+        self.cmb_run.setMinimumWidth(150)
+        self.cmb_run.setToolTip("Runs of text on this frame; ids match the labels "
+                                "drawn on the boxes in the RGB pane")
+        self.cmb_run.currentIndexChanged.connect(lambda _: self._sync_exclude_button())
+        transport.addWidget(self.cmb_run)
+        self.btn_exclude = QPushButton("exclude (X)")
+        self.btn_exclude.setToolTip(
+            "Reject the selected run. Some scene text is real, level and still, "
+            "and no measurement can tell it from a caption.")
+        self.btn_exclude.clicked.connect(self._toggle_run)
+        transport.addWidget(self.btn_exclude)
         transport.addWidget(self.slider, 1)
         transport.addWidget(self.lbl_frame)
         outer.addLayout(transport)
@@ -438,6 +456,7 @@ class MainWindow(QMainWindow):
             (Qt.Key_0, lambda: self.view.set_solo(None)),
             # Not Tab: Qt spends that on focus navigation before a shortcut sees it.
             (Qt.Key_N, self._next_text_run),
+            (Qt.Key_X, self._toggle_run),
         ]
         for i in range(4):
             shortcuts.append((getattr(Qt, f"Key_{i + 1}"), lambda n=i: self.view.set_solo(n)))
@@ -448,7 +467,7 @@ class MainWindow(QMainWindow):
             self.addAction(act)
 
         hint = QLabel(
-            "  ←/→ frame · N next text · 1-4 solo a pane · Space flips before/after"
+            "  ←/→ frame · N next text · X exclude a run · 1-4 solo a pane · Space flips before/after"
             " · 0 all · F fit · double-click a pane"
         )
         hint.setStyleSheet("color: #778;")
@@ -645,6 +664,7 @@ class MainWindow(QMainWindow):
         self.slider.setRange(0, max(s.n_frames - 1, 0))
         self.strip.configure(s.n_frames, [])
         self.btn_detect.setEnabled(True)
+        self._sync_exclude_button()
         self.status.showMessage(f"alignment — {s.align_note}")
 
         if s.load_timeline():
@@ -670,6 +690,7 @@ class MainWindow(QMainWindow):
             self.slider.setValue(frame)
             self.slider.blockSignals(False)
         self.strip.set_current(frame)
+        self._sync_run_list()
         has_text = bool(self.session.timeline[frame]) if frame < len(self.session.timeline) else False
         self.lbl_frame.setText(f"{frame} / {max(self.session.n_frames - 1, 0)}" + ("  ✎" if has_text else ""))
         self._request_render(segment=True)
@@ -685,6 +706,60 @@ class MainWindow(QMainWindow):
         if runs:
             self.goto_frame(runs[0][0])
 
+    def _runs_here(self) -> List[int]:
+        s = self.session
+        if s is None or self.frame >= len(s.timeline):
+            return []
+        return sorted({r.run for r in s.timeline[self.frame] if r.run >= 0})
+
+    def _selected_run(self) -> Optional[int]:
+        data = self.cmb_run.currentData()
+        return int(data) if data is not None else None
+
+    def _sync_run_list(self) -> None:
+        """Offer the runs on this frame, keeping the selection where possible."""
+        s = self.session
+        want = self._runs_here()
+        keep = self._selected_run()
+        self.cmb_run.blockSignals(True)
+        self.cmb_run.clear()
+        for rid in want:
+            span = sum(1 for f in s.timeline if any(r.run == rid for r in f))
+            mark = " (excluded)" if rid in s.excluded else ""
+            self.cmb_run.addItem(f"run {rid} · {span}f{mark}", rid)
+        if keep in want:
+            self.cmb_run.setCurrentIndex(want.index(keep))
+        self.cmb_run.blockSignals(False)
+        self._sync_exclude_button()
+
+    def _sync_exclude_button(self) -> None:
+        rid = self._selected_run()
+        s = self.session
+        on = rid is not None and s is not None
+        self.btn_exclude.setEnabled(on)
+        if on and rid in s.excluded:
+            self.btn_exclude.setText("restore (X)")
+        else:
+            self.btn_exclude.setText("exclude (X)")
+
+    def _toggle_run(self) -> None:
+        """Reject or restore the run selected for this frame."""
+        s = self.session
+        if s is None:
+            return
+        run_id = self._selected_run()
+        if run_id is None:
+            self.status.showMessage("no run of text on this frame to exclude")
+            return
+        excluded = s.toggle_run(run_id)
+        s.persist_exclusions()
+        self._refresh_runs()
+        self.goto_frame(self.frame)
+        self.status.showMessage(
+            f"run {run_id} {'excluded' if excluded else 'restored'} "
+            f"({len(s.excluded)} excluded in total)"
+        )
+
     def _request_render(self, segment: bool) -> None:
         if self.session is None:
             return
@@ -696,9 +771,12 @@ class MainWindow(QMainWindow):
             return
         dh, dw = s.depth_info.height, s.depth_info.width
         rgb = cv2.resize(panels.rgb, (dw, dh), interpolation=cv2.INTER_AREA)
-        for x0, y0, x1, y1 in panels.boxes:
-            a = s.alignment.map_box((x0, y0, x1, y1))
+        for region in panels.regions:
+            a = s.alignment.map_box(region.box)
             cv2.rectangle(rgb, (a[0], a[1]), (a[2], a[3]), (90, 230, 90), 1)
+            if region.run >= 0:
+                cv2.putText(rgb, str(region.run), (a[0] + 2, max(10, a[1] - 3)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (90, 230, 90), 1)
 
         images = [
             rgb,
@@ -766,10 +844,18 @@ class MainWindow(QMainWindow):
                 pass
         self._after_detection()
 
+    def _refresh_runs(self) -> None:
+        s = self.session
+        self.strip.excluded_runs = _spans(
+            [i for i in range(len(s.timeline)) if s.timeline[i] and not s.visible(i)]
+        )
+        self.strip.configure(s.n_frames, s.text_runs())
+        self._sync_run_list()
+
     def _after_detection(self) -> None:
         s = self.session
         runs = s.text_runs()
-        self.strip.configure(s.n_frames, runs)
+        self._refresh_runs()
         self.btn_render.setEnabled(bool(runs))
         self._update_command()
         if runs:
@@ -818,6 +904,8 @@ class MainWindow(QMainWindow):
             cmd += ["--min-track", str(self.spin_min_track.value())]
         if s is not None and os.path.isfile(s.paths.timeline):
             cmd += ["--timeline", s.paths.timeline]
+        if s is not None and s.excluded:
+            cmd += ["--exclude-runs", ",".join(str(i) for i in sorted(s.excluded))]
         return cmd
 
     def _update_command(self) -> None:
@@ -897,6 +985,17 @@ class MainWindow(QMainWindow):
 # --------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------
+def _spans(frames: List[int]) -> List[Tuple[int, int]]:
+    """Contiguous runs from a sorted list of frame indices."""
+    out: List[Tuple[int, int]] = []
+    for f in sorted(frames):
+        if out and f == out[-1][1] + 1:
+            out[-1] = (out[-1][0], f)
+        else:
+            out.append((f, f))
+    return out
+
+
 def _slider(lo: int, hi: int, value: int, on_change) -> QSlider:
     s = QSlider(Qt.Horizontal)
     s.setRange(lo, hi)

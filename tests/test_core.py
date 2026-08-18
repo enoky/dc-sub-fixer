@@ -481,6 +481,55 @@ def test_two_tracks_are_judged_separately():
     assert kept == {good}
 
 
+def test_surviving_runs_are_numbered_from_zero():
+    a, b = (100, 100, 400, 160), (1400, 600, 1700, 660)
+    timeline = [[regions.Region(a, (a,), 0.95), regions.Region(b, (b,), 0.95)]
+                for _ in range(20)]
+    out = regions.smooth_timeline(timeline, regions.RegionConfig(min_track=2))
+    ids = {r.run for items in out for r in items}
+    assert ids == {0, 1}
+
+
+def test_a_run_id_names_the_same_text_on_every_frame():
+    """The id is what an exclusion refers to, so it has to be stable."""
+    a, b = (100, 100, 400, 160), (1400, 600, 1700, 660)
+    timeline = [[regions.Region(a, (a,), 0.95), regions.Region(b, (b,), 0.95)]
+                for _ in range(20)]
+    out = regions.smooth_timeline(timeline, regions.RegionConfig(min_track=2))
+    by_box = {}
+    for items in out:
+        for r in items:
+            by_box.setdefault(r.box, set()).add(r.run)
+    assert all(len(v) == 1 for v in by_box.values()), by_box
+
+
+def test_a_rejected_run_does_not_renumber_the_others():
+    """Ids come from the survivors, so what is kept stays contiguous."""
+    good = (100, 100, 400, 160)
+    brief = (1400, 600, 1700, 660)
+    timeline = [[regions.Region(good, (good,), 0.95)] for _ in range(20)]
+    timeline[5] = timeline[5] + [regions.Region(brief, (brief,), 0.95)]
+    out = regions.smooth_timeline(timeline, regions.RegionConfig(min_track=3))
+    assert {r.run for items in out for r in items} == {0}
+
+
+def test_run_id_survives_a_json_round_trip():
+    region = regions.Region((0, 0, 200, 100), ((10, 10, 40, 40),), 0.9, 7)
+    assert regions.region_from_json(regions.region_to_json(region)).run == 7
+
+
+def test_a_timeline_written_before_run_ids_reads_as_unassigned():
+    assert regions.region_from_json([0, 0, 10, 10]).run == -1
+    assert regions.region_from_json({"box": [0, 0, 10, 10]}).run == -1
+
+
+def test_merging_two_regions_keeps_the_lower_run_id():
+    a = regions.Region((0, 0, 100, 50), ((0, 0, 100, 50),), 0.9, 3)
+    b = regions.Region((90, 0, 200, 50), ((90, 0, 200, 50),), 0.9, 1)
+    merged = regions.merge_regions([a, b], gap=0)
+    assert len(merged) == 1 and merged[0].run == 1
+
+
 def test_a_track_filter_gets_the_last_word():
     box = (400, 300, 800, 380)
     timeline = [[regions.Region(box, (box,), 0.95)] for _ in range(20)]

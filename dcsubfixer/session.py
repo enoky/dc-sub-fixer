@@ -161,6 +161,11 @@ class TuningSession:
         self.masks = MaskStore(self.paths.masks)
 
         self.timeline: List[List[regions.Region]] = []
+        # Runs the user has rejected by eye. Some false positives are real,
+        # legible, level, stationary text on a prop or a screen, which no
+        # measurement here can tell from a caption; saying so directly is more
+        # honest than another threshold.
+        self.excluded: set = set()
         self._segmenter: Optional[hisam.StrokeSegmenter] = None
         self._mem: Dict[Tuple[int, Box], np.ndarray] = {}
 
@@ -191,6 +196,7 @@ class TuningSession:
         stopped being bare boxes: `tuple()` on the new dict yields its keys.
         """
         self.timeline = [[regions.region_from_json(e) for e in f] for f in data["regions"]]
+        self.excluded = set(data.get("excluded", []))
 
     def load_timeline(self) -> bool:
         if not os.path.isfile(self.paths.timeline):
@@ -201,12 +207,43 @@ class TuningSession:
         return True
 
     def save_timeline(self, data: dict) -> None:
+        data = {**data, "excluded": sorted(self.excluded)}
         with open(self.paths.timeline, "w", encoding="utf-8") as fh:
             json.dump(data, fh)
 
+    def persist_exclusions(self) -> bool:
+        """Write the current exclusions back into the cached timeline."""
+        if not os.path.isfile(self.paths.timeline):
+            return False
+        with open(self.paths.timeline, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        self.save_timeline(data)
+        return True
+
+    def run_at(self, frame: int) -> Optional[int]:
+        """The run id under a frame, preferring one that is not excluded."""
+        items = self.timeline[frame] if frame < len(self.timeline) else []
+        ids = [r.run for r in items if r.run >= 0]
+        if not ids:
+            return None
+        live = [i for i in ids if i not in self.excluded]
+        return live[0] if live else ids[0]
+
+    def toggle_run(self, run_id: int) -> bool:
+        """Exclude or restore a run. Returns True if it is now excluded."""
+        if run_id in self.excluded:
+            self.excluded.discard(run_id)
+            return False
+        self.excluded.add(run_id)
+        return True
+
+    def visible(self, frame: int) -> List[regions.Region]:
+        items = self.timeline[frame] if frame < len(self.timeline) else []
+        return [r for r in items if r.run not in self.excluded]
+
     def text_runs(self) -> List[Tuple[int, int]]:
         """Contiguous spans that carry text, for a timeline strip."""
-        frames = [i for i, b in enumerate(self.timeline) if b]
+        frames = [i for i in range(len(self.timeline)) if self.visible(i)]
         if not frames:
             return []
         runs, start, prev = [], frames[0], frames[0]
@@ -256,10 +293,9 @@ class TuningSession:
         return got
 
     def is_cached(self, frame: int) -> bool:
-        items = self.timeline[frame] if frame < len(self.timeline) else []
         return all(
             (frame, r.box) in self._mem or os.path.isfile(self.masks.path_for(frame, r.box))
-            for r in items
+            for r in self.visible(frame)
         )
 
     # -- rendering ------------------------------------------------------
@@ -273,7 +309,7 @@ class TuningSession:
         planar = self.depth_reader.frame(frame)
         dh, dw = self.depth_info.height, self.depth_info.width
         before = video.luma(planar, dh, dw).copy()
-        items = list(self.timeline[frame]) if frame < len(self.timeline) else []
+        items = self.visible(frame)
 
         prob_rgb = np.zeros((self.rgb_info.height, self.rgb_info.width), np.float32)
         for region in items:

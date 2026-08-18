@@ -122,6 +122,7 @@ compositing controls that update the visible frame as you drag them.
 | `N` | jump to the next run of text |
 | `1`–`4` | blow one pane up to fill the window |
 | `Space` | flip between before and after, at the same zoom |
+| `X` | exclude the selected run of text, or restore it |
 | `0` / `F` | show all four / fit |
 
 The reason it feels immediate is that segmentation is cached to disk per frame
@@ -299,6 +300,18 @@ DepthCrafter left *around* them. `--heal` inpaints that halo from the
 surrounding depth before the glyphs go down. It is off by default because it
 changes pixels beyond the glyphs themselves — try it with `--debug-dir` and
 judge on your own footage.
+
+**Text that is simply not a caption.** Some false positives are real, legible,
+level, stationary, confidently-read text — a product label, a sign, a graphic
+on a screen in shot. Every check above asks "is this text?" and the honest
+answer is yes, so none of them helps.
+
+For those, reject the run by eye. Each surviving run of text gets an id, drawn
+on its box in the RGB pane; pick it from the list beside the transport and press
+**X**. The choice is written into the timeline, so the CLI render honours it and
+it survives a restart, and `--exclude-runs 0,2` does the same headlessly. On a
+clip whose set is full of packaging, this took a scene of six runs down to the
+one that was a credit.
 
 ## Tuning
 

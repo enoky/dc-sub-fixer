@@ -34,6 +34,15 @@ def _quality(value: str) -> str:
     return str(n)
 
 
+def _run_ids(value: str) -> Tuple[int, ...]:
+    if not value.strip():
+        return ()
+    try:
+        return tuple(int(v) for v in value.replace(" ", "").split(",") if v)
+    except ValueError:
+        raise argparse.ArgumentTypeError("expected comma-separated run ids, e.g. 0,3")
+
+
 def _text_value(value: str) -> str:
     if value.lower() == "auto":
         return "auto"
@@ -138,6 +147,10 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--gate-min-inside", type=float, default=0.5,
                    help="fraction of a stroke blob that must lie on a detection for it "
                         "to be kept (0 disables filtering)")
+    g.add_argument("--exclude-runs", type=_run_ids, default=(), metavar="N,M",
+                   help="drop these runs of text by id. The tuning window writes its "
+                        "own choices into the timeline, so this is only needed for "
+                        "headless use")
     g.add_argument("--cache-tolerance", type=float, default=2.0,
                    help="mean pixel difference below which a region counts as unchanged "
                         "and its mask is reused")
@@ -204,6 +217,7 @@ def config_from_args(args: argparse.Namespace) -> pipeline.PipelineConfig:
         align=args.align,
         ocr_stride=args.ocr_stride,
         cache_tolerance=args.cache_tolerance,
+        exclude_runs=args.exclude_runs,
         gate=args.gate,
         gate_dilate=args.gate_dilate,
         gate_min_inside=args.gate_min_inside,

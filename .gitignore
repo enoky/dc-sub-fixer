@@ -190,3 +190,6 @@ third_party/
 timeline.json
 debug/
 *.mp4
+
+# scratch diagnostics, not part of the tool
+.scratch/

@@ -43,6 +43,7 @@ class PipelineConfig:
     timeline_path: Optional[str] = None
     # Filtering the mask back down to where the detector found text. See
     # regions.gate_by_detections.
+    exclude_runs: Tuple[int, ...] = ()
     gate: bool = True
     gate_dilate: int = 8
     gate_min_inside: float = 0.5
@@ -150,6 +151,15 @@ def detect_pass(cfg: PipelineConfig) -> List[List[Region]]:
 
     raw = result["regions"]
     timeline = [[regions.region_from_json(e) for e in frame] for frame in raw]
+
+    # Runs rejected by eye, either in the tuning window (stored in the
+    # timeline) or on the command line.
+    excluded = set(result.get("excluded", [])) | set(cfg.exclude_runs)
+    if excluded:
+        before = sum(1 for f in timeline if f)
+        timeline = [[r for r in f if r.run not in excluded] for f in timeline]
+        after = sum(1 for f in timeline if f)
+        print(f"  excluding run(s) {sorted(excluded)}: {before - after} fewer text frames")
     print(
         f"  text detected in {result['raw_text_frames']}/{result['n_frames']} frames "
         f"-> {result['text_frames']} after temporal smoothing "
