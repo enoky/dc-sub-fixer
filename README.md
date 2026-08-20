@@ -131,6 +131,14 @@ arithmetic, about 20ms — and no GPU work happens until you visit a frame nobod
 has segmented yet, which costs about 0.2s. The cache lives under
 `~/.dcsubfixer/cache/` keyed to the clip pair, so it survives restarts.
 
+Closing the window clears the cached masks for that clip, which is where
+essentially all of its size is. They are pure GPU output and rebuild
+identically, so the cost is only the time to re-segment a frame when you next
+look at it. The detections and any runs you excluded are kept, because that
+half is small and holds decisions that cannot be recreated by running something
+again — tick the second box to discard those too, or untick the first to keep
+everything.
+
 Detection runs as a subprocess because it has to (Paddle and torch cannot share
 a process). The final render runs as one by choice: **it shells out to the same
 CLI you could type yourself**, so what you tuned is exactly what you get. The

@@ -55,10 +55,19 @@ class MaskStore:
         quantised = np.clip(prob * 255.0, 0, 255).astype(np.uint8)
         cv2.imwrite(self.path_for(frame, box), quantised)
 
-    def clear(self) -> None:
+    def size(self) -> int:
+        return sum(os.path.getsize(os.path.join(self.root, n))
+                   for n in os.listdir(self.root) if n.endswith(".png"))
+
+    def clear(self) -> int:
+        """Delete every stored mask. Returns the bytes reclaimed."""
+        freed = 0
         for name in os.listdir(self.root):
             if name.endswith(".png"):
-                os.remove(os.path.join(self.root, name))
+                path = os.path.join(self.root, name)
+                freed += os.path.getsize(path)
+                os.remove(path)
+        return freed
 
 
 @dataclass
@@ -333,6 +342,32 @@ class TuningSession:
         lo = float(min(before.min(), after.min()))
         hi = float(max(before.max(), after.max()))
         return FramePanels(frame, rgb, items, before, after, prob, (lo, hi))
+
+    def clear_cache(self, masks: bool = True, timeline: bool = False) -> int:
+        """Throw away what this clip has cached. Returns the bytes reclaimed.
+
+        The two halves are not worth the same. Masks are the bulk of it and are
+        pure GPU output: deleting them costs about 0.2s a frame to rebuild, and
+        rebuilds identically. The timeline is small but holds the detection
+        settings that produced it and any runs rejected by hand, which is work
+        that cannot be recreated by running something again - so it goes only
+        when asked for explicitly.
+        """
+        freed = 0
+        if masks:
+            freed += self.masks.clear()
+            self._mem.clear()
+        if timeline and os.path.isfile(self.paths.timeline):
+            freed += os.path.getsize(self.paths.timeline)
+            os.remove(self.paths.timeline)
+            self.timeline, self.excluded = [], set()
+        return freed
+
+    def cache_size(self) -> int:
+        total = self.masks.size()
+        if os.path.isfile(self.paths.timeline):
+            total += os.path.getsize(self.paths.timeline)
+        return total
 
     def close(self) -> None:
         self.rgb_reader.close()

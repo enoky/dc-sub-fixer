@@ -787,6 +787,34 @@ def test_mask_store_round_trips_a_probability_map(tmp_path):
     assert np.abs(back - prob).max() < 1.0 / 255 + 1e-6
 
 
+def test_mask_store_reports_and_reclaims_its_size(tmp_path):
+    store = session.MaskStore(str(tmp_path))
+    assert store.size() == 0
+    for f in range(6):
+        store.put(f, (0, 0, 64, 32), np.random.RandomState(f).rand(32, 64).astype(np.float32))
+    before = store.size()
+    assert before > 0
+    assert store.clear() == before
+    assert store.size() == 0
+    assert store.get(0, (0, 0, 64, 32)) is None
+
+
+def test_clearing_an_empty_mask_store_is_harmless(tmp_path):
+    store = session.MaskStore(str(tmp_path))
+    assert store.clear() == 0
+    assert store.clear() == 0
+
+
+def test_mask_store_clear_leaves_other_files_alone(tmp_path):
+    """The store shares a directory tree with the timeline; only masks go."""
+    store = session.MaskStore(str(tmp_path))
+    store.put(0, (0, 0, 32, 16), np.zeros((16, 32), np.float32))
+    keep = tmp_path / "notes.json"
+    keep.write_text("{}", encoding="utf-8")
+    store.clear()
+    assert keep.exists()
+
+
 def test_mask_store_keys_on_frame_and_box(tmp_path):
     store = session.MaskStore(str(tmp_path))
     prob = np.ones((8, 8), np.float32)

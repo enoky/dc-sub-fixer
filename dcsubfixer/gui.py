@@ -555,6 +555,17 @@ class MainWindow(QMainWindow):
         self.btn_cancel.clicked.connect(self._cancel_process)
         self.btn_cancel.setEnabled(False)
         rl.addWidget(self.btn_cancel)
+        self.chk_clear_masks = QCheckBox("clear cached masks on close")
+        self.chk_clear_masks.setChecked(True)
+        self.chk_clear_masks.setToolTip(
+            "Masks are pure GPU output and rebuild identically, about 0.2s a "
+            "frame. Detections and excluded runs are kept either way.")
+        rl.addWidget(self.chk_clear_masks)
+        self.chk_clear_timeline = QCheckBox("…and the detections too")
+        self.chk_clear_timeline.setToolTip(
+            "Also discards the detection pass and any runs you excluded, so the "
+            "next open starts from nothing.")
+        rl.addWidget(self.chk_clear_timeline)
         rl.addWidget(QLabel("equivalent command:"))
         self.txt_cmd = QPlainTextEdit()
         self.txt_cmd.setReadOnly(True)
@@ -978,13 +989,39 @@ class MainWindow(QMainWindow):
         self._render_thread.quit()
         self._render_thread.wait(2000)
         if self.session is not None:
+            self._clear_cache_on_exit()
             self.session.close()
         super().closeEvent(event)
+
+    def _clear_cache_on_exit(self) -> None:
+        """Reclaim the clip's cache, to whatever depth was asked for."""
+        masks = self.chk_clear_masks.isChecked()
+        timeline = self.chk_clear_timeline.isChecked()
+        if not (masks or timeline):
+            return
+        try:
+            freed = self.session.clear_cache(masks=masks, timeline=timeline)
+        except OSError as exc:
+            # Never let tidying up stop the window from closing.
+            print(f"could not clear the cache: {exc}", file=sys.stderr)
+            return
+        what = "masks and detections" if timeline else "masks"
+        self.status.showMessage(f"cleared cached {what} — {_bytes(freed)}")
+        print(f"cleared cached {what} ({_bytes(freed)}) from "
+              f"{self.session.paths.cache_dir}")
 
 
 # --------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------
+def _bytes(n: int) -> str:
+    """A size a person can read, rather than 0.0 MB for everything small."""
+    for unit, size in (("MB", 1e6), ("KB", 1e3)):
+        if n >= size:
+            return f"{n / size:.1f} {unit}"
+    return f"{n} bytes"
+
+
 def _spans(frames: List[int]) -> List[Tuple[int, int]]:
     """Contiguous runs from a sorted list of frame indices."""
     out: List[Tuple[int, int]] = []
