@@ -351,7 +351,7 @@ class TuningSession:
 
         best, best_score = None, -1.0
         for f in dict.fromkeys(picks):
-            mask = self.mask_for(f, region.box, run_mask=False)
+            mask = self.mask_for(f, region.box)
             score = float((mask > 0.5).sum())
             if score > best_score:
                 best, best_score = mask, score
@@ -359,9 +359,8 @@ class TuningSession:
             self._run_masks[key] = best
         return best
 
-    def mask_for(self, frame: int, box: Box, rgb: Optional[np.ndarray] = None,
-                 run_mask: bool = True) -> np.ndarray:
-        """Stroke probability for one region, from memory, disk, or Hi-SAM."""
+    def mask_for(self, frame: int, box: Box, rgb: Optional[np.ndarray] = None) -> np.ndarray:
+        """Stroke probability for one crop, from memory, disk, or Hi-SAM."""
         key = (frame, box)
         got = self._mem.get(key)
         if got is not None:
@@ -378,18 +377,49 @@ class TuningSession:
             self._mem.pop(next(iter(self._mem)))
         return got
 
+    def has_mask(self, frame: int, box: Box) -> bool:
+        """True when this crop's own mask is in memory or on disk."""
+        return (frame, box) in self._mem or os.path.isfile(self.masks.path_for(frame, box))
+
+    def mask_ready(self, frame: int, region: regions.Region) -> bool:
+        """True when the mask this region *will actually use* needs no GPU.
+
+        Which mask that is depends on run_mask: with it on the region composites
+        the run's own mask, so having this frame's mask cached is beside the
+        point - and not having it is not a reason to skip the region.
+        """
+        if self.run_mask and region.run >= 0:
+            return (region.run, region.box) in self._run_masks
+        return self.has_mask(frame, region.box)
+
     def is_cached(self, frame: int) -> bool:
-        return all(
-            (frame, r.box) in self._mem or os.path.isfile(self.masks.path_for(frame, r.box))
-            for r in self.visible(frame)
-        )
+        return all(self.mask_ready(frame, r) for r in self.visible(frame))
+
+    def region_mask(self, frame: int, region: regions.Region,
+                    rgb: Optional[np.ndarray] = None,
+                    segment: bool = True) -> Optional[np.ndarray]:
+        """The mask this region composites with, or None if it is not to hand.
+
+        None only ever comes back with `segment=False`, the scrubbing and
+        live-tuning path, where leaving a region blank is better than stalling
+        the view on Hi-SAM.
+        """
+        if not (segment or self.mask_ready(frame, region)):
+            return None
+        if self.run_mask:
+            mask = self.best_run_mask(region)
+            if mask is not None:
+                return mask
+        return self.mask_for(frame, region.box, rgb)
 
     # -- rendering ------------------------------------------------------
     def render(self, frame: int, cfg: comp.CompositeConfig, segment: bool = True) -> FramePanels:
         """Build the comparison panels for one frame.
 
-        With `segment=False` no GPU work happens: uncached regions are simply
-        left blank, so the view can stay responsive while scrubbing.
+        With `segment=False` no GPU work happens: regions whose mask is not
+        already to hand are left blank, so the view can stay responsive while
+        scrubbing. Regions are judged one at a time - one uncached region no
+        longer blanks the others on the same frame.
         """
         rgb = self.rgb_reader.frame(frame)
         planar = self.depth_reader.frame(frame)
@@ -402,13 +432,9 @@ class TuningSession:
             x0, y0, x1, y1 = region.box
             if x1 <= x0 or y1 <= y0:
                 continue
-            if not segment and not self.is_cached(frame):
-                continue
-            mask = None
-            if self.run_mask:
-                mask = self.best_run_mask(region)
+            mask = self.region_mask(frame, region, rgb, segment)
             if mask is None:
-                mask = self.mask_for(frame, region.box, rgb)
+                continue
             if self.gate:
                 mask = regions.gate_by_detections(
                     mask, region, self.gate_dilate, self.gate_min_inside
@@ -438,6 +464,7 @@ class TuningSession:
         if masks:
             freed += self.masks.clear()
             self._mem.clear()
+            self._run_masks.clear()
         if timeline and os.path.isfile(self.paths.timeline):
             freed += os.path.getsize(self.paths.timeline)
             os.remove(self.paths.timeline)

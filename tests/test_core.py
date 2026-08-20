@@ -840,6 +840,78 @@ def test_mask_store_keys_on_frame_and_box(tmp_path):
     assert store.get(1, (0, 0, 8, 9)) is None, "a different box must not collide"
 
 
+def _bare_session(tmp_path, run_mask=True):
+    """A TuningSession with only the mask bookkeeping filled in.
+
+    The real constructor probes two videos and loads Hi-SAM; the cache rules
+    tested here touch none of that, so the parts they do read are set directly
+    rather than faked around a whole clip pair.
+    """
+    s = object.__new__(session.TuningSession)
+    s.run_mask = run_mask
+    s.run_mask_samples = 5
+    s._run_masks = {}
+    s._mem = {}
+    s.masks = session.MaskStore(str(tmp_path))
+    return s
+
+
+def test_a_run_mask_counts_as_cached_on_every_frame_of_its_run(tmp_path):
+    """The regression that blanked the preview while tuning a slider.
+
+    With one mask per run, the frame on screen usually has no mask of its own -
+    the run's mask came from a different frame. Asking for this frame's mask
+    said "not cached", so the no-GPU render path skipped the region and the
+    text vanished from the preview on every slider move.
+    """
+    s = _bare_session(tmp_path)
+    region = regions.Region((0, 0, 64, 32), ((0, 0, 64, 32),), 0.9, 3)
+    assert not s.mask_ready(26, region)
+    s._run_masks[(3, region.box)] = np.ones((32, 64), np.float32)
+    assert s.mask_ready(26, region), "the run's mask serves every frame of the run"
+    assert s.mask_ready(40, region)
+
+
+def test_a_frame_mask_does_not_stand_in_for_a_missing_run_mask(tmp_path):
+    """The one that is cached is not the one that would be drawn."""
+    s = _bare_session(tmp_path)
+    region = regions.Region((0, 0, 64, 32), ((0, 0, 64, 32),), 0.9, 3)
+    s._mem[(26, region.box)] = np.ones((32, 64), np.float32)
+    assert s.has_mask(26, region.box)
+    assert not s.mask_ready(26, region)
+
+
+def test_without_run_masks_readiness_is_per_frame(tmp_path):
+    s = _bare_session(tmp_path, run_mask=False)
+    region = regions.Region((0, 0, 64, 32), ((0, 0, 64, 32),), 0.9, 3)
+    assert not s.mask_ready(26, region)
+    s._run_masks[(3, region.box)] = np.ones((32, 64), np.float32)
+    assert not s.mask_ready(26, region), "run masks are not in play here"
+    s.masks.put(26, region.box, np.ones((32, 64), np.float32))
+    assert s.mask_ready(26, region)
+
+
+def test_an_untracked_region_is_judged_by_its_own_frame(tmp_path):
+    """Run -1 means no run to borrow a mask from."""
+    s = _bare_session(tmp_path)
+    region = regions.Region((0, 0, 64, 32), ((0, 0, 64, 32),), 0.9, -1)
+    assert not s.mask_ready(9, region)
+    s._mem[(9, region.box)] = np.ones((32, 64), np.float32)
+    assert s.mask_ready(9, region)
+
+
+def test_clearing_masks_forgets_the_run_masks_too(tmp_path):
+    """Otherwise "clear cache" leaves the very masks on screen in memory."""
+    s = _bare_session(tmp_path)
+    region = regions.Region((0, 0, 64, 32), ((0, 0, 64, 32),), 0.9, 3)
+    s._run_masks[(3, region.box)] = np.ones((32, 64), np.float32)
+    s._mem[(26, region.box)] = np.ones((32, 64), np.float32)
+    s.masks.put(26, region.box, np.ones((32, 64), np.float32))
+    session.TuningSession.clear_cache(s, masks=True)
+    assert s._run_masks == {}
+    assert not s.mask_ready(26, region)
+
+
 def test_cache_dir_is_stable_and_pair_specific():
     a = session.default_cache_dir("clip.mp4", "clip_depth.mp4")
     assert a == session.default_cache_dir("clip.mp4", "clip_depth.mp4")
