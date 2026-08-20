@@ -141,7 +141,14 @@ class TuningSession:
         gate: bool = True,
         gate_dilate: int = 8,
         gate_min_inside: float = 0.5,
+        run_mask: bool = True,
+        run_mask_samples: int = 5,
     ) -> None:
+        # Segment a run once, at its strongest frame, instead of every frame
+        # separately. See best_run_mask.
+        self.run_mask = run_mask
+        self.run_mask_samples = run_mask_samples
+        self._run_masks: Dict[Tuple[int, Box], np.ndarray] = {}
         # Masks are cached raw and filtered on use, so these stay adjustable
         # without re-running Hi-SAM.
         self.gate = gate
@@ -295,7 +302,52 @@ class TuningSession:
     def model_loaded(self) -> bool:
         return self._segmenter is not None
 
-    def mask_for(self, frame: int, box: Box, rgb: Optional[np.ndarray] = None) -> np.ndarray:
+    def run_frames(self, run_id: int) -> List[int]:
+        return [i for i, items in enumerate(self.timeline)
+                if any(r.run == run_id for r in items)]
+
+    def best_run_mask(self, region: regions.Region) -> Optional[np.ndarray]:
+        """The strongest segmentation anywhere in this run, for the whole run.
+
+        Hi-SAM is a text-stroke model, and on anything that is not quite text -
+        a logo, a stylised mark - its confidence swings hard with the
+        background. On the DC ident the same static logo segments cleanly on
+        one frame and almost vanishes forty frames later, while the two real
+        captions beside it are perfect throughout. Segmenting each frame
+        separately re-rolls that every time, which is what makes the mask
+        flicker.
+
+        The run has already been shown to be stationary (it passed the motion
+        filter) and its box is canonical across the run, so one mask is valid
+        for all of it - and using the best one is strictly better than using an
+        arbitrary one. It also makes the composited glyphs perfectly steady,
+        which per-frame segmentation cannot be.
+        """
+        if region.run < 0:
+            return None
+        key = (region.run, region.box)
+        cached = self._run_masks.get(key)
+        if cached is not None:
+            return cached
+
+        frames = self.run_frames(region.run)
+        if not frames:
+            return None
+        n = max(1, min(self.run_mask_samples, len(frames)))
+        picks = [frames[int(round(i * (len(frames) - 1) / max(n - 1, 1)))] for i in range(n)]
+
+        best, best_score = None, -1.0
+        for f in dict.fromkeys(picks):
+            mask = self.mask_for(f, region.box, run_mask=False)
+            score = float((mask > 0.5).sum())
+            if score > best_score:
+                best, best_score = mask, score
+        if best is not None:
+            self._run_masks[key] = best
+        return best
+
+    def mask_for(self, frame: int, box: Box, rgb: Optional[np.ndarray] = None,
+                 run_mask: bool = True) -> np.ndarray:
         """Stroke probability for one region, from memory, disk, or Hi-SAM."""
         key = (frame, box)
         got = self._mem.get(key)
@@ -339,7 +391,11 @@ class TuningSession:
                 continue
             if not segment and not self.is_cached(frame):
                 continue
-            mask = self.mask_for(frame, region.box, rgb)
+            mask = None
+            if self.run_mask:
+                mask = self.best_run_mask(region)
+            if mask is None:
+                mask = self.mask_for(frame, region.box, rgb)
             if self.gate:
                 mask = regions.gate_by_detections(
                     mask, region, self.gate_dilate, self.gate_min_inside

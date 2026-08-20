@@ -531,6 +531,13 @@ class MainWindow(QMainWindow):
         cl.addRow("feather", self.sld_feather)
         cl.addRow("opacity", self.sld_opacity)
         cl.addRow("", self.chk_binary)
+        self.chk_run_mask = QCheckBox("one mask per run of text")
+        self.chk_run_mask.setChecked(True)
+        self.chk_run_mask.setToolTip(
+            "Take each run's strongest mask and use it throughout, rather than "
+            "segmenting every frame. Stops logos flickering.")
+        self.chk_run_mask.stateChanged.connect(self._run_mask_changed)
+        cl.addRow("", self.chk_run_mask)
         cl.addRow("heal", self.chk_heal)
         cl.addRow("  radius", self.sld_heal_r)
         self.lbl_settings = QLabel()
@@ -620,6 +627,13 @@ class MainWindow(QMainWindow):
         self._update_command()
         if self.session is not None:
             self._debounce.start()
+
+    def _run_mask_changed(self, *_) -> None:
+        if self.session is None:
+            return
+        self.session.run_mask = self.chk_run_mask.isChecked()
+        self._update_command()
+        self._request_render(segment=True)
 
     def _align_changed(self, text: str) -> None:
         if self.session is None:
@@ -905,6 +919,8 @@ class MainWindow(QMainWindow):
             cmd += ["--heal", "--heal-radius", str(cfg.heal_radius)]
         if cfg.binary:
             cmd += ["--binary"]
+        if not self.chk_run_mask.isChecked():
+            cmd += ["--no-run-mask"]
         if cfg.dilate:
             cmd += ["--dilate", f"{cfg.dilate:.2f}"]
         if cfg.feather:

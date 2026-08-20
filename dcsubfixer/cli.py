@@ -160,6 +160,13 @@ def build_parser() -> argparse.ArgumentParser:
                    help="max region size fed to the encoder; larger regions are tiled")
     g.add_argument("--overlap", type=float, default=0.25, help="tile overlap fraction")
     g.add_argument("--precision", default="fp16", choices=["fp16", "fp32"])
+    g.add_argument("--no-run-mask", dest="run_mask", action="store_false",
+                   help="segment every frame separately instead of taking one mask "
+                        "per run of text. Hi-SAM's confidence on a logo swings with "
+                        "the background, so per-frame masks flicker on things that "
+                        "never move")
+    g.add_argument("--run-mask-samples", type=int, default=5,
+                   help="frames sampled across a run to find its strongest mask")
 
     g = p.add_argument_group("compositing")
     g.add_argument("--text-value", type=_text_value, default="auto",
@@ -218,6 +225,8 @@ def config_from_args(args: argparse.Namespace) -> pipeline.PipelineConfig:
         ocr_stride=args.ocr_stride,
         cache_tolerance=args.cache_tolerance,
         exclude_runs=args.exclude_runs,
+        run_mask=args.run_mask,
+        run_mask_samples=args.run_mask_samples,
         gate=args.gate,
         gate_dilate=args.gate_dilate,
         gate_min_inside=args.gate_min_inside,

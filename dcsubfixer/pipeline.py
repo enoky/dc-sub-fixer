@@ -44,6 +44,8 @@ class PipelineConfig:
     # Filtering the mask back down to where the detector found text. See
     # regions.gate_by_detections.
     exclude_runs: Tuple[int, ...] = ()
+    run_mask: bool = True
+    run_mask_samples: int = 5
     gate: bool = True
     gate_dilate: int = 8
     gate_min_inside: float = 0.5
@@ -207,6 +209,7 @@ def render_pass(
     )
     segmenter = hisam.StrokeSegmenter(model, device=cfg.device, config=cfg.segmenter)
     cache = MaskCache(tolerance=cfg.cache_tolerance)
+    run_masks = _RunMasks(cfg, timeline, segmenter) if cfg.run_mask else None
 
     if cfg.debug_dir:
         os.makedirs(cfg.debug_dir, exist_ok=True)
@@ -253,11 +256,13 @@ def render_pass(
                 crop = rgb[y0:y1, x0:x1]
                 if crop.size == 0:
                     continue
-                mask = cache.get(region.box, crop, idx)
+                mask = run_masks.get(region) if run_masks is not None else None
                 if mask is None:
-                    mask = segmenter.segment(crop)
-                    segmentations += 1
-                    cache.put(region.box, crop, mask, idx)
+                    mask = cache.get(region.box, crop, idx)
+                    if mask is None:
+                        mask = segmenter.segment(crop)
+                        segmentations += 1
+                        cache.put(region.box, crop, mask, idx)
                 # Cached raw, filtered on use, so the gate stays adjustable
                 # without re-running Hi-SAM.
                 if cfg.gate:
@@ -294,11 +299,68 @@ def render_pass(
             idx += 1
         bar.close()
 
+    if run_masks is not None:
+        segmentations += run_masks.segmentations
+        run_masks.close()
     hit_rate = cache.hits / max(1, cache.hits + cache.misses)
     print(
         f"  segmented {segmentations} regions across {n_text_frames} text frames "
         f"(mask cache hit rate {hit_rate:.0%})"
     )
+
+
+class _RunMasks:
+    """One mask per run, taken from the run's strongest frame.
+
+    Hi-SAM's confidence on anything that is not quite text - a logo, a
+    stylised mark - swings with the background, so segmenting every frame
+    separately makes the mask flicker even when the thing on screen never
+    moves. The run has already passed the motion filter and its box is
+    canonical across the run, so a single mask is valid throughout, and the
+    best one beats an arbitrary one.
+    """
+
+    def __init__(self, cfg: "PipelineConfig", timeline, segmenter) -> None:
+        self.cfg = cfg
+        self.segmenter = segmenter
+        self.reader = video.FrameReader(cfg.rgb_path, "rgb24")
+        self.frames: Dict[int, List[int]] = {}
+        for idx, items in enumerate(timeline):
+            for region in items:
+                if region.run >= 0:
+                    self.frames.setdefault(region.run, []).append(idx)
+        self._masks: Dict[Tuple[int, Box], np.ndarray] = {}
+        self.segmentations = 0
+
+    def get(self, region) -> Optional[np.ndarray]:
+        if region.run < 0:
+            return None
+        key = (region.run, region.box)
+        if key in self._masks:
+            return self._masks[key]
+        frames = self.frames.get(region.run) or []
+        if not frames:
+            return None
+        n = max(1, min(self.cfg.run_mask_samples, len(frames)))
+        picks = dict.fromkeys(
+            frames[int(round(i * (len(frames) - 1) / max(n - 1, 1)))] for i in range(n))
+        x0, y0, x1, y1 = region.box
+        best, best_score = None, -1.0
+        for f in picks:
+            crop = self.reader.frame(f)[y0:y1, x0:x1]
+            if crop.size == 0:
+                continue
+            mask = self.segmenter.segment(crop)
+            self.segmentations += 1
+            score = float((mask > 0.5).sum())
+            if score > best_score:
+                best, best_score = mask, score
+        if best is not None:
+            self._masks[key] = best
+        return best
+
+    def close(self) -> None:
+        self.reader.close()
 
 
 def _write_debug(

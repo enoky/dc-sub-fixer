@@ -279,6 +279,22 @@ default sits in a wide gap; 0.9 starts cutting real ones, because a stylised
 face gets misread (`MATTHIAS SCHOENAERTS` comes back as `FATCHIAS SLHO-NAERT`
 at 0.89) while still being obviously a caption.
 
+**Masks that flicker on logos.** Hi-SAM segments text strokes, and its
+confidence on something that is only nearly text — a logo, a stylised mark —
+swings hard with whatever is behind it. On one ident the same static DC logo
+segments cleanly at frame 20 and almost vanishes by frame 40, while the two
+real captions beside it are perfect on every frame. Lowering the mask window
+does not recover it: on the weak frames barely a hundred pixels clear even
+0.35, so the segmentation is genuinely missing rather than merely faint.
+
+Since a run has already been shown not to move and its box is canonical across
+the run, one mask is valid for all of it — so each run is segmented at its
+strongest frame and that mask is used throughout. That fixed the logo (constant
+coverage from the frame it appears on, against a three-to-one swing before) and
+cut the clip's segmentations from 99 to 25, because a held caption is now
+segmented a handful of times rather than once a frame. `--no-run-mask` returns
+to per-frame segmentation.
+
 **Scene text inside a caption's outline.** Those two filters both act on whole
 detections, and there is a third case they cannot see. A region is a rectangle
 around one or more lines, and a rectangle drawn around two lines of different
@@ -349,6 +365,7 @@ python -m dcsubfixer rgb.mp4 depth.mp4 out.mp4 --heal --mask-low 0.45 --mask-hig
 | glyphs still look soft | `--heal`, and narrow the window to `--mask-low 0.45 --mask-high 0.6` |
 | smeared halo remains around the text | `--heal`, raise `--heal-radius` |
 | glyphs too thin or too fat | adjust `--dilate` (default 0.70). It is in *depth* pixels, so a whole one is two in the source; past about 1.0 the letters start to merge |
+| a logo's mask flickers or drops out | leave the run mask on; `--run-mask-samples 9` searches harder for a good frame |
 | glyph edges too crisp, or too soft | adjust `--feather` (default 0.70). A spatial blur, so unlike the mask window it works on `--binary` too |
 | edges aliased or crawling | widen `--mask-low` / `--mask-high` |
 | text flickers on and off | raise `--max-gap`, lower `--min-track` |
