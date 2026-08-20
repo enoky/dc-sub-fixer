@@ -52,6 +52,33 @@ PANE_TITLES = ("RGB source", "depth (before)", "glyph mask", "depth (fixed)")
 # --------------------------------------------------------------------------
 # comparison view
 # --------------------------------------------------------------------------
+def fit_transform(frame: Tuple[int, int], cell: Tuple[float, float],
+                  margin: float = 0.98) -> Tuple[float, float, float]:
+    """Scale and offset that centre one frame inside one pane.
+
+    Kept out of the widget so the arithmetic behind fitting can be tested
+    without a running Qt application.
+    """
+    fw, fh = frame
+    cw, ch = cell
+    scale = min(cw / fw, ch / fh) * margin
+    return scale, (cw - fw * scale) / 2.0, (ch - fh * scale) / 2.0
+
+
+def recentred_offset(offset: Tuple[float, float], before: Tuple[float, float],
+                     after: Tuple[float, float]) -> Tuple[float, float]:
+    """Offset holding the image point at the pane centre when the pane resizes.
+
+    For someone zoomed in on a glyph edge, enlarging the window should
+    reveal more of the image around what they are looking at, not shove it
+    off to one side. The zoom itself is untouched, which is why the scale
+    cancels out here.
+    """
+    ox, oy = offset
+    return (after[0] / 2.0 - (before[0] / 2.0 - ox),
+            after[1] / 2.0 - (before[1] / 2.0 - oy))
+
+
 class ComparisonView(QWidget):
     """Four panes over one shared pan/zoom.
 
@@ -63,7 +90,9 @@ class ComparisonView(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setMinimumSize(640, 360)
+        # Low enough that the window stays free to shrink; the panes refit
+        # to whatever they are given rather than pinning a floor under it.
+        self.setMinimumSize(320, 200)
         self.setMouseTracking(True)
         self._images: List[Optional[QImage]] = [None] * 4
         self._frame_size = (1, 1)
@@ -71,6 +100,15 @@ class ComparisonView(QWidget):
         self.offset = QPointF(0, 0)
         self._drag: Optional[QPointF] = None
         self._fit_pending = True
+        # True while the view is showing a plain fit, i.e. the zoom and pan
+        # are ours rather than the user's. Only then is refitting on a
+        # resize the right thing; once they have zoomed in, their framing is
+        # what has to be preserved.
+        self._fitted = True
+        # The size the current offset was worked out for. Tracked here
+        # rather than read from the resize event, whose old size is not
+        # reported for a widget that has yet to be shown.
+        self._laid_out = (float(self.width()), float(self.height()))
         self.solo: Optional[int] = None
         self.setFocusPolicy(Qt.StrongFocus)
 
@@ -81,29 +119,55 @@ class ComparisonView(QWidget):
             self._fit_pending = True
         self.update()
 
-    def _cells(self) -> List[QRectF]:
+    def _cells(self, size: Optional[Tuple[float, float]] = None) -> List[QRectF]:
         """A 2x2 grid, or one full-size pane when soloing.
 
         Stacking the panes in a column was tried for scope footage and is no
         better: with four panes in a roughly square viewport the limit is the
         area each one gets, not the arrangement, and both layouts land on the
         same image size. Detail comes from soloing a pane instead.
+
+        `size` asks for the layout at some width and height other than the
+        current one, which is how a resize compares where a pane was
+        against where it has ended up.
         """
+        wide, high = size if size is not None else (self.width(), self.height())
         if self.solo is not None:
-            return [QRectF(0, 0, self.width(), self.height())]
-        w, h = self.width() / 2.0, self.height() / 2.0
+            return [QRectF(0, 0, wide, high)]
+        w, h = wide / 2.0, high / 2.0
         return [QRectF(c * w, r * h, w, h) for r in range(2) for c in range(2)]
+
+    def _recentre(self, before: QRectF, after: QRectF) -> None:
+        ox, oy = recentred_offset(
+            (self.offset.x(), self.offset.y()),
+            (before.width(), before.height()),
+            (after.width(), after.height()),
+        )
+        self.offset = QPointF(ox, oy)
 
     def fit(self) -> None:
         fw, fh = self._frame_size
         cell = self._cells()[0]
-        if fw <= 0 or fh <= 0:
+        if fw <= 0 or fh <= 0 or cell.width() <= 0 or cell.height() <= 0:
             return
-        self.scale = min(cell.width() / fw, cell.height() / fh) * 0.98
-        self.offset = QPointF(
-            (cell.width() - fw * self.scale) / 2.0, (cell.height() - fh * self.scale) / 2.0
-        )
+        self.scale, ox, oy = fit_transform((fw, fh), (cell.width(), cell.height()))
+        self.offset = QPointF(ox, oy)
         self._fit_pending = False
+        self._fitted = True
+        self.update()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        """Keep the panes filled as the window - or the splitter - is dragged.
+
+        A plain fit is ours to redo, so it follows the new pane size. A zoom
+        the user set is theirs, so it is held and only recentred.
+        """
+        super().resizeEvent(event)
+        was, self._laid_out = self._laid_out, (float(self.width()), float(self.height()))
+        if self._fitted:
+            self._fit_pending = True
+        elif was[0] > 0 and was[1] > 0:
+            self._recentre(self._cells(was)[0], self._cells()[0])
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt naming)
@@ -146,6 +210,7 @@ class ComparisonView(QWidget):
         factor = 1.25 if event.angleDelta().y() > 0 else 1 / 1.25
         self.scale = max(0.05, min(64.0, self.scale * factor))
         self.offset = local - before * self.scale
+        self._fitted = False
         self.update()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
@@ -156,6 +221,7 @@ class ComparisonView(QWidget):
         if self._drag is not None:
             self.offset += event.position() - self._drag
             self._drag = event.position()
+            self._fitted = False
             self.update()
 
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
@@ -175,11 +241,16 @@ class ComparisonView(QWidget):
         """Show one pane full size, keeping the current zoom and pan."""
         if index == self.solo:
             return
+        before = self._cells()[0]
         self.solo = index
-        # Only refit when leaving a zoomed-in inspection, so that flipping
-        # between before and after does not disturb the framing.
-        if index is None:
+        # Soloing quadruples the pane, so a plain fit has to be redone or the
+        # image sits small in a corner of it. A zoomed-in inspection is only
+        # recentred, so that flipping between before and after - where the
+        # pane does not change size at all - never disturbs the framing.
+        if self._fitted or index is None:
             self._fit_pending = True
+        else:
+            self._recentre(before, self._cells()[0])
         self.update()
 
     def flip(self) -> None:

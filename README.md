@@ -134,6 +134,12 @@ clear both what was removed and which it was.
 | `X` | exclude the selected run of text, or restore it |
 | `0` / `F` | show all four / fit |
 
+The panes refit as you resize the window or drag the splitter, so the previews
+always fill the space they are given. Once you zoom or pan, the framing is
+yours: a resize then holds your zoom and keeps whatever you were looking at in
+the middle of the pane, rather than resetting it. `F` hands the framing back
+and resizes follow the window again.
+
 The reason it feels immediate is that segmentation is cached to disk per frame
 and region. Moving a slider re-composites from the stored mask — array
 arithmetic, about 20ms — and no GPU work happens until you visit a frame nobody
