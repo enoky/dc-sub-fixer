@@ -175,6 +175,7 @@ class TuningSession:
         # measurement here can tell from a caption; saying so directly is more
         # honest than another threshold.
         self.excluded: set = set()
+        self.timeline_note: str = ""  # why a cached timeline was refused, if it was
         self._segmenter: Optional[hisam.StrokeSegmenter] = None
         self._mem: Dict[Tuple[int, Box], np.ndarray] = {}
 
@@ -208,15 +209,26 @@ class TuningSession:
         self.excluded = set(data.get("excluded", []))
 
     def load_timeline(self) -> bool:
+        self.timeline_note = ""
         if not os.path.isfile(self.paths.timeline):
             return False
-        with open(self.paths.timeline, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
+        try:
+            with open(self.paths.timeline, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError) as exc:
+            self.timeline_note = f"cached timeline unreadable ({exc}); detect again"
+            return False
+        if not regions.timeline_is_current(data):
+            # Refused rather than half-read: an older timeline still has boxes
+            # and still loads, which is exactly why it used to go unnoticed.
+            self.timeline_note = "cached timeline is from an older format; detect again"
+            return False
         self.set_timeline(data)
         return True
 
     def save_timeline(self, data: dict) -> None:
-        data = {**data, "excluded": sorted(self.excluded)}
+        data = {**data, "version": regions.TIMELINE_VERSION,
+                "excluded": sorted(self.excluded)}
         with open(self.paths.timeline, "w", encoding="utf-8") as fh:
             json.dump(data, fh)
 

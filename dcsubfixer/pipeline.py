@@ -131,11 +131,17 @@ def detect_pass(cfg: PipelineConfig) -> List[List[Region]]:
     (see _paddle_env). Results are cached to --timeline when given, so that
     re-runs which only change compositing settings skip detection entirely.
     """
+    result = None
     if cfg.timeline_path and os.path.isfile(cfg.timeline_path):
         with open(cfg.timeline_path, "r", encoding="utf-8") as fh:
-            result = json.load(fh)
-        print(f"  reusing cached timeline from {cfg.timeline_path}")
-    else:
+            cached = json.load(fh)
+        if regions.timeline_is_current(cached):
+            result = cached
+            print(f"  reusing cached timeline from {cfg.timeline_path}")
+        else:
+            print(f"  cached timeline at {cfg.timeline_path} is from an older "
+                  f"format; detecting again")
+    if result is None:
         request = {
             "rgb_path": os.path.abspath(cfg.rgb_path),
             "detector": asdict(cfg.detector),
@@ -165,11 +171,6 @@ def detect_pass(cfg: PipelineConfig) -> List[List[Region]]:
         f"-> {result['text_frames']} after temporal smoothing "
         f"(dropping tracks shorter than {result.get('min_track', '?')} frames)"
     )
-    if not regions.timeline_has_detections(raw):
-        print(
-            "  note: this cached timeline predates per-region detections, so masks "
-            "cannot be filtered. Delete it to regenerate."
-        )
     return timeline
 
 

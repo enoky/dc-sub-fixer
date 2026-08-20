@@ -449,6 +449,18 @@ def smooth_timeline(
 
 
 # ---------------------------------------------------------------- serialising
+# What a stored timeline holds. Bump this whenever the shape written by
+# region_to_json or detect_worker changes, so a cache from an older build is
+# discarded and rebuilt rather than half-understood. That has bitten this
+# project repeatedly: a timeline written before regions carried their
+# detections still loaded, still had boxes, and quietly disabled mask gating.
+TIMELINE_VERSION = 1
+
+
+def timeline_is_current(data: dict) -> bool:
+    """Whether a loaded timeline was written by this version of the format."""
+    return int(data.get("version", 0)) == TIMELINE_VERSION
+
 def region_to_json(region: Region) -> dict:
     return {
         "box": list(region.box),
@@ -468,14 +480,6 @@ def region_from_json(entry) -> Region:
     # A bare box from an older cache: gate to the whole region, i.e. no filtering.
     box = tuple(entry)
     return Region(box, (box,))
-
-
-def timeline_has_detections(raw: Sequence[Sequence]) -> bool:
-    """Whether a loaded timeline carries real detections, or just outlines."""
-    for frame in raw:
-        for entry in frame:
-            return isinstance(entry, dict) and bool(entry.get("dets"))
-    return True
 
 
 # -------------------------------------------------------------------- gating

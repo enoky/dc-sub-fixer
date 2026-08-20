@@ -84,6 +84,7 @@ def detect(request: dict, progress: bool = False) -> dict:
         per_frame, reg_cfg, min_track=min_track, track_filter=recogniser
     )
     return {
+        "version": regions.TIMELINE_VERSION,
         "rgb_path": rgb_path,
         "width": info.width,
         "height": info.height,

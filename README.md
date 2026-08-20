@@ -131,6 +131,12 @@ arithmetic, about 20ms — and no GPU work happens until you visit a frame nobod
 has segmented yet, which costs about 0.2s. The cache lives under
 `~/.dcsubfixer/cache/` keyed to the clip pair, so it survives restarts.
 
+A stored timeline records the format it was written in. When that does not
+match, it is refused and detection runs again rather than the old file being
+half-understood — which is the failure this project kept hitting: a timeline
+written before regions carried their detections still loaded, still had boxes,
+and quietly turned mask filtering off.
+
 Closing the window clears the cached masks for that clip, which is where
 essentially all of its size is. They are pure GPU output and rebuild
 identically, so the cost is only the time to re-segment a frame when you next

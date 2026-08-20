@@ -733,11 +733,28 @@ def test_region_json_round_trip():
     assert regions.region_from_json(regions.region_to_json(region)) == region
 
 
-def test_timeline_detection_check_spots_an_old_cache():
-    assert not regions.timeline_has_detections([[[0, 0, 10, 10]]])
-    assert regions.timeline_has_detections(
-        [[{"box": [0, 0, 10, 10], "dets": [[1, 1, 5, 5]]}]]
-    )
+def test_a_timeline_without_a_version_is_stale():
+    """Every cache written before versioning, i.e. all of them."""
+    assert not regions.timeline_is_current({"regions": []})
+
+
+def test_a_timeline_from_another_version_is_stale():
+    assert not regions.timeline_is_current({"version": regions.TIMELINE_VERSION + 1})
+    assert not regions.timeline_is_current({"version": regions.TIMELINE_VERSION - 1})
+
+
+def test_a_timeline_of_this_version_is_current():
+    assert regions.timeline_is_current({"version": regions.TIMELINE_VERSION})
+
+
+def test_the_worker_result_carries_the_version():
+    """Whatever detect_worker writes has to be readable back as current."""
+    region = regions.Region((0, 0, 200, 100), ((10, 10, 40, 40),), 0.9, 0)
+    written = {
+        "version": regions.TIMELINE_VERSION,
+        "regions": [[regions.region_to_json(region)]],
+    }
+    assert regions.timeline_is_current(written)
 
 
 def _worker_result(frames):

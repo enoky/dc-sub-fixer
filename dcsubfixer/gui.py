@@ -683,6 +683,8 @@ class MainWindow(QMainWindow):
                 f"loaded cached timeline · {sum(1 for b in s.timeline if b)} frames with text"
             )
             self._after_detection()
+        elif s.timeline_note:
+            self.lbl_detect.setText(s.timeline_note)
         self.goto_frame(0)
         self._settings_changed()
 
