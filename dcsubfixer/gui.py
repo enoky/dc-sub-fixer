@@ -211,60 +211,146 @@ def _to_qimage(arr: Optional[np.ndarray]) -> Optional[QImage]:
 # timeline strip
 # --------------------------------------------------------------------------
 class TimelineStrip(QWidget):
-    """Frame ruler showing where text lives and what has been segmented."""
+    """Frame ruler showing where each run of text lives.
+
+    A run gets its own colour and its own lane. Both matter: the colour ties a
+    bar to the box drawn round that text in the RGB pane, and the lanes keep
+    runs that overlap in time from collapsing into one indistinguishable band -
+    which is exactly the case where you need to tell them apart, because a
+    frame carrying a caption *and* a prop's label is where a wrong exclusion
+    gets made. Runs that do not overlap share a lane, so a clip of sequential
+    captions still draws as a single tidy row.
+    """
 
     seek = Signal(int)
+    run_picked = Signal(int)
+
+    LANE_H = 13
+    TOP = 4
 
     def __init__(self) -> None:
         super().__init__()
-        self.setFixedHeight(34)
         self.n_frames = 0
-        self.runs: List[Tuple[int, int]] = []
-        self.excluded_runs: List[Tuple[int, int]] = []
+        self.runs: List[Tuple[int, int, int, bool]] = []  # id, start, end, excluded
         self.cached: set = set()
         self.current = 0
+        self.selected: Optional[int] = None
+        self._lanes: dict = {}
+        self._lane_count = 1
+        self.setMouseTracking(True)
+        self._relayout()
 
-    def configure(self, n_frames: int, runs: List[Tuple[int, int]]) -> None:
+    def configure(self, n_frames: int, runs: List[Tuple[int, int, int, bool]]) -> None:
         self.n_frames = max(1, n_frames)
-        self.runs = runs
+        self.runs = list(runs)
+        self._relayout()
         self.update()
 
     def set_current(self, frame: int) -> None:
         self.current = frame
         self.update()
 
+    def set_selected(self, run_id: Optional[int]) -> None:
+        if run_id != self.selected:
+            self.selected = run_id
+            self.update()
+
+    # -- layout ---------------------------------------------------------
+    def _relayout(self) -> None:
+        """Pack runs into as few lanes as their overlaps allow."""
+        self._lanes = {}
+        ends: List[int] = []
+        for rid, a, b, _ in sorted(self.runs, key=lambda r: r[1]):
+            for i, end in enumerate(ends):
+                if a > end:
+                    ends[i] = b
+                    self._lanes[rid] = i
+                    break
+            else:
+                self._lanes[rid] = len(ends)
+                ends.append(b)
+        self._lane_count = max(1, len(ends))
+        self.setFixedHeight(self.TOP * 2 + self._lane_count * self.LANE_H + 8)
+
     def _x(self, frame: int) -> float:
         return frame / max(self.n_frames - 1, 1) * (self.width() - 1)
 
+    def _bar(self, rid: int, a: int, b: int) -> QRectF:
+        x0, x1 = self._x(a), self._x(b)
+        y = self.TOP + self._lanes.get(rid, 0) * self.LANE_H
+        return QRectF(x0, y, max(x1 - x0, 2.0), self.LANE_H - 2)
+
+    # -- painting -------------------------------------------------------
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(32, 32, 36))
         h = self.height()
-        for a, b in self.runs:
-            x0, x1 = self._x(a), self._x(b)
-            p.fillRect(QRectF(x0, 6, max(x1 - x0, 1.5), h - 18), QColor(72, 132, 200))
-        # Rejected runs stay visible, so it is obvious what was removed and
-        # where, rather than the bar simply disappearing.
-        for a, b in self.excluded_runs:
-            x0, x1 = self._x(a), self._x(b)
-            p.fillRect(QRectF(x0, 6, max(x1 - x0, 1.5), h - 18), QColor(120, 60, 60))
+
+        for rid, a, b, excluded in self.runs:
+            bar = self._bar(rid, a, b)
+            colour = run_colour(rid)
+            if excluded:
+                # Kept visible, and still its own colour, so it is obvious both
+                # what was removed and which one it was.
+                p.fillRect(bar, QColor(colour.red() // 3, colour.green() // 3,
+                                       colour.blue() // 3))
+                p.setPen(QPen(colour.darker(140), 1, Qt.DashLine))
+                p.drawRect(bar)
+                p.setPen(QPen(colour.darker(115)))
+                mid = bar.center().y()
+                p.drawLine(int(bar.left()), int(mid), int(bar.right()), int(mid))
+            else:
+                p.fillRect(bar, colour)
+            if rid == self.selected:
+                p.setPen(QPen(QColor(250, 250, 250), 2))
+                p.drawRect(bar.adjusted(-1, -1, 1, 1))
+            if bar.width() > 22:
+                p.setPen(QPen(QColor(20, 20, 24) if not excluded else colour.darker(130)))
+                p.drawText(bar.adjusted(3, 0, -2, 0), Qt.AlignVCenter | Qt.AlignLeft, str(rid))
+
         for f in self.cached:
-            p.fillRect(QRectF(self._x(f), h - 10, 1.5, 5), QColor(120, 200, 120))
+            p.fillRect(QRectF(self._x(f), h - 6, 1.5, 4), QColor(120, 200, 120))
+
         p.setPen(QPen(QColor(240, 220, 120), 2))
         x = self._x(self.current)
         p.drawLine(int(x), 0, int(x), h)
         p.end()
+
+    # -- interaction ----------------------------------------------------
+    def _run_at(self, pos) -> Optional[int]:
+        for rid, a, b, _ in self.runs:
+            if self._bar(rid, a, b).contains(pos):
+                return rid
+        return None
 
     def _emit_from(self, pos) -> None:
         frac = min(max(pos.x() / max(self.width() - 1, 1), 0.0), 1.0)
         self.seek.emit(int(round(frac * (self.n_frames - 1))))
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
+        # Clicking a bar selects that run as well as seeking, so the thing you
+        # are about to exclude is the thing you just pointed at.
+        rid = self._run_at(event.position())
         self._emit_from(event.position())
+        if rid is not None:
+            self.run_picked.emit(rid)
 
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
         if event.buttons() & Qt.LeftButton:
             self._emit_from(event.position())
+            return
+        self.setCursor(Qt.PointingHandCursor if self._run_at(event.position())
+                       else Qt.ArrowCursor)
+
+
+def run_colour(run_id: int) -> QColor:
+    """A stable, well-separated colour per run.
+
+    Stepping the hue by the golden ratio keeps consecutive ids far apart on the
+    wheel, so neighbouring runs never come out as two similar blues.
+    """
+    hue = (run_id * 0.61803398875) % 1.0
+    return QColor.fromHsvF(hue, 0.62, 0.92)
 
 
 # --------------------------------------------------------------------------
@@ -409,6 +495,7 @@ class MainWindow(QMainWindow):
         # transport
         self.strip = TimelineStrip()
         self.strip.seek.connect(self.goto_frame)
+        self.strip.run_picked.connect(self._pick_run)
         outer.addWidget(self.strip)
 
         transport = QHBoxLayout()
@@ -757,10 +844,12 @@ class MainWindow(QMainWindow):
         if keep in want:
             self.cmb_run.setCurrentIndex(want.index(keep))
         self.cmb_run.blockSignals(False)
+        self.strip.set_selected(self._selected_run())
         self._sync_exclude_button()
 
     def _sync_exclude_button(self) -> None:
         rid = self._selected_run()
+        self.strip.set_selected(rid)
         s = self.session
         on = rid is not None and s is not None
         self.btn_exclude.setEnabled(on)
@@ -800,10 +889,15 @@ class MainWindow(QMainWindow):
         rgb = cv2.resize(panels.rgb, (dw, dh), interpolation=cv2.INTER_AREA)
         for region in panels.regions:
             a = s.alignment.map_box(region.box)
-            cv2.rectangle(rgb, (a[0], a[1]), (a[2], a[3]), (90, 230, 90), 1)
+            # Same colour as this run's bar on the strip, so the two views
+            # name the same thing without having to read the id.
+            c = run_colour(region.run) if region.run >= 0 else QColor(90, 230, 90)
+            rgb_c = (c.red(), c.green(), c.blue())
+            thick = 2 if region.run == self._selected_run() else 1
+            cv2.rectangle(rgb, (a[0], a[1]), (a[2], a[3]), rgb_c, thick)
             if region.run >= 0:
                 cv2.putText(rgb, str(region.run), (a[0] + 2, max(10, a[1] - 3)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (90, 230, 90), 1)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.4, rgb_c, 1)
 
         images = [
             rgb,
@@ -873,11 +967,35 @@ class MainWindow(QMainWindow):
 
     def _refresh_runs(self) -> None:
         s = self.session
-        self.strip.excluded_runs = _spans(
-            [i for i in range(len(s.timeline)) if s.timeline[i] and not s.visible(i)]
-        )
-        self.strip.configure(s.n_frames, s.text_runs())
+        self.strip.configure(s.n_frames, s.run_spans())
         self._sync_run_list()
+
+    def _pick_run(self, run_id: int) -> None:
+        """Select a run, going to it first if it is not on this frame.
+
+        The strip shows every run, so any bar can be clicked; the picker beside
+        the transport only lists the runs on the current frame. Without the
+        jump, choosing a run playing elsewhere would quietly select nothing and
+        the next exclusion would land on whatever happened to be selected
+        already.
+        """
+        if not self._select_in_combo(run_id):
+            spans = {rid: (a, b) for rid, a, b, _ in self.session.run_spans()}
+            if run_id not in spans:
+                return
+            a, b = spans[run_id]
+            if not (a <= self.frame <= b):
+                self.goto_frame(a)
+            self._select_in_combo(run_id)
+        self.strip.set_selected(run_id)
+        self._sync_exclude_button()
+
+    def _select_in_combo(self, run_id: int) -> bool:
+        for i in range(self.cmb_run.count()):
+            if self.cmb_run.itemData(i) == run_id:
+                self.cmb_run.setCurrentIndex(i)
+                return True
+        return False
 
     def _after_detection(self) -> None:
         s = self.session
@@ -1038,17 +1156,6 @@ def _bytes(n: int) -> str:
         if n >= size:
             return f"{n / size:.1f} {unit}"
     return f"{n} bytes"
-
-
-def _spans(frames: List[int]) -> List[Tuple[int, int]]:
-    """Contiguous runs from a sorted list of frame indices."""
-    out: List[Tuple[int, int]] = []
-    for f in sorted(frames):
-        if out and f == out[-1][1] + 1:
-            out[-1] = (out[-1][0], f)
-        else:
-            out.append((f, f))
-    return out
 
 
 def _slider(lo: int, hi: int, value: int, on_change) -> QSlider:

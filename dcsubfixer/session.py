@@ -302,6 +302,19 @@ class TuningSession:
     def model_loaded(self) -> bool:
         return self._segmenter is not None
 
+    def run_spans(self) -> List[Tuple[int, int, int, bool]]:
+        """Every run as (id, first frame, last frame, excluded)."""
+        first: Dict[int, int] = {}
+        last: Dict[int, int] = {}
+        for i, items in enumerate(self.timeline):
+            for r in items:
+                if r.run < 0:
+                    continue
+                first.setdefault(r.run, i)
+                last[r.run] = i
+        return [(rid, first[rid], last[rid], rid in self.excluded)
+                for rid in sorted(first)]
+
     def run_frames(self, run_id: int) -> List[int]:
         return [i for i, items in enumerate(self.timeline)
                 if any(r.run == run_id for r in items)]

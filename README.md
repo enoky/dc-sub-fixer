@@ -113,8 +113,17 @@ its depth map onto it to open that pair. It keeps a console window open behind
 the GUI on purpose: if something goes wrong, that is where the error appears.
 
 Four panes over one shared zoom — RGB with the detected regions, depth before,
-the glyph mask, depth after — a timeline strip marking every run of text, and
+the glyph mask, depth after — a timeline strip along the bottom, and
 compositing controls that update the visible frame as you drag them.
+
+Every run of text gets its own colour on that strip, and the box drawn round it
+in the RGB pane is the same colour, so the two views name the same thing
+without your having to read an id. Runs that overlap in time are given separate
+lanes; ones that do not share a lane, so a clip of sequential captions still
+draws as one tidy row. Click a bar to jump to that run and select it — the
+thing you are about to exclude is the thing you just pointed at. Excluded runs
+stay on the strip, dimmed and struck through in their own colour, so it is
+clear both what was removed and which it was.
 
 | key | |
 | --- | --- |
